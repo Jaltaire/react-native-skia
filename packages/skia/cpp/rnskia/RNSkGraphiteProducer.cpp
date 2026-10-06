@@ -177,6 +177,10 @@ void RNSkGraphiteProducer::produce() {
       }
     }
   }
+  if (recording != nullptr && !recording->waitForPipelines()) {
+    RNSkLogger::logToConsole(
+        "Canvas: a pipeline of the frame failed to compile.");
+  }
   std::lock_guard<std::mutex> lock(_mutex);
   _inFlight = false;
   if (recording != nullptr) {
