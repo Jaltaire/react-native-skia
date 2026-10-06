@@ -54,6 +54,10 @@ public:
 
   skgpu::graphite::Recording *get() const { return _recording.get(); }
 
+  bool waitForPipelines() const {
+    return _recorder->recorder->waitForPipelines(_recording.get());
+  }
+
   /**
    Whether the recording was made for a texture of the given size. A deferred
    canvas records against fixed dimensions: Graphite sizes the passes (and
