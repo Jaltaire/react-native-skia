@@ -29,7 +29,8 @@ public class PlatformContext {
 
     public PlatformContext(ReactContext reactContext) {
         mContext = reactContext;
-        mHybridData = initHybrid(reactContext.getResources().getDisplayMetrics().density);
+        mHybridData = initHybrid(reactContext.getResources().getDisplayMetrics().density,
+                reactContext.getCacheDir().getAbsolutePath());
     }
 
     @DoNotStrip
@@ -125,7 +126,7 @@ public class PlatformContext {
     }
 
     // Private c++ native methods
-    private native HybridData initHybrid(float pixelDensity);
+    private native HybridData initHybrid(float pixelDensity, String cacheDirectory);
 
     private native void notifyTaskReadyNative();
 }
