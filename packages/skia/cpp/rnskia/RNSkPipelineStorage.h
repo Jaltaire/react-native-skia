@@ -3,7 +3,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,22 +26,21 @@ public:
   std::vector<sk_sp<SkData>> loadPipelineKeys() const;
   void rejectPipelineKey(const SkData &pipelineKey) const;
 
-  const std::filesystem::path &root() const { return _root; }
+  const std::string &root() const { return _root; }
 
 private:
-  RNSkPipelineStorage(std::filesystem::path root,
-                      std::filesystem::path blobDirectory,
-                      std::filesystem::path pipelineDirectory);
+  RNSkPipelineStorage(std::string root, std::string blobDirectory,
+                      std::string pipelineDirectory);
 
-  std::filesystem::path blobPath(const uint8_t *key, size_t keySize) const;
-  std::filesystem::path pipelinePath(const SkData &pipelineKey,
-                                     const char *extension) const;
-  bool writeAtomically(const std::filesystem::path &path,
+  std::string blobPath(const uint8_t *key, size_t keySize) const;
+  std::string pipelinePath(const SkData &pipelineKey,
+                           const char *extension) const;
+  bool writeAtomically(const std::string &path,
                        const std::vector<uint8_t> &contents) const;
 
-  std::filesystem::path _root;
-  std::filesystem::path _blobDirectory;
-  std::filesystem::path _pipelineDirectory;
+  std::string _root;
+  std::string _blobDirectory;
+  std::string _pipelineDirectory;
   mutable std::atomic<uint64_t> _nextTemporaryId{0};
 };
 

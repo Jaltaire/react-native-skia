@@ -69,7 +69,7 @@ std::vector<uint8_t> load(const RNSkPipelineStorage &storage,
 
 fs::path blobFile(const RNSkPipelineStorage &storage,
                   const std::vector<uint8_t> &key) {
-  return storage.root() / "dawn" /
+  return fs::path(storage.root()) / "dawn" /
          (Format::HashName(key.data(), key.size()) + ".blob");
 }
 
@@ -108,7 +108,7 @@ const std::vector<TestCase> kTests = {
        CHECK(storage != nullptr);
        const fs::path root =
            dir / "react-native-skia" / "pipeline-cache" / "m154";
-       CHECK(storage->root() == root);
+       CHECK(fs::path(storage->root()) == root);
        CHECK(fs::is_directory(root / "dawn"));
        CHECK(fs::is_directory(root / "graphite"));
      }},
@@ -189,7 +189,7 @@ const std::vector<TestCase> kTests = {
        storage->storeBlob(key.data(), key.size(), value.data(), 0);
        storage->storeBlob(nullptr, key.size(), value.data(), value.size());
        storage->storeBlob(key.data(), key.size(), nullptr, value.size());
-       CHECK(countFiles(storage->root() / "dawn", ".blob") == 0);
+       CHECK(countFiles(fs::path(storage->root()) / "dawn", ".blob") == 0);
      }},
     {"A file holding another key's blob misses rather than returning it.",
      [](const fs::path &dir) {
@@ -256,7 +256,7 @@ const std::vector<TestCase> kTests = {
        CHECK(std::find(values.begin(), values.end(), loaded) != values.end());
        size_t entries = 0;
        for (const auto &entry :
-            fs::directory_iterator(storage->root() / "dawn")) {
+            fs::directory_iterator(fs::path(storage->root()) / "dawn")) {
          (void)entry;
          ++entries;
        }
@@ -280,7 +280,7 @@ const std::vector<TestCase> kTests = {
      [](const fs::path &dir) {
        auto storage = RNSkPipelineStorage::Open(dir.string(), "m154");
        storage->storePipelineKey(*data("alpha"));
-       const fs::path graphite = storage->root() / "graphite";
+       const fs::path graphite = fs::path(storage->root()) / "graphite";
        writeAll(graphite / "partial.key.tmp-1-2", bytes("partial"));
        writeAll(graphite / "notes.txt", bytes("notes"));
        writeAll(graphite / "empty.key", {});
@@ -295,7 +295,8 @@ const std::vector<TestCase> kTests = {
        CHECK(keyTexts(*storage) == std::vector<std::string>({"alpha"}));
        storage->storePipelineKey(*data("beta"));
        CHECK(keyTexts(*storage) == std::vector<std::string>({"alpha"}));
-       CHECK(countFiles(storage->root() / "graphite", ".rejected") == 1);
+       CHECK(countFiles(fs::path(storage->root()) / "graphite", ".rejected") ==
+             1);
      }},
     {"Rejecting a key that was never stored changes nothing.",
      [](const fs::path &dir) {
@@ -303,7 +304,8 @@ const std::vector<TestCase> kTests = {
        storage->storePipelineKey(*data("alpha"));
        storage->rejectPipelineKey(*data("gamma"));
        CHECK(keyTexts(*storage) == std::vector<std::string>({"alpha"}));
-       CHECK(countFiles(storage->root() / "graphite", ".rejected") == 0);
+       CHECK(countFiles(fs::path(storage->root()) / "graphite", ".rejected") ==
+             0);
      }},
     {"The blob format round-trips and checks its key.",
      [](const fs::path &) {
