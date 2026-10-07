@@ -284,6 +284,17 @@ public:
     return !_queue.empty();
   }
 
+  /** Whether the view has a surface to present to. */
+  bool hasSurface() {
+    std::shared_ptr<RNSkCanvasProvider> provider;
+    {
+      std::lock_guard<std::mutex> lock(_stateMutex);
+      provider = _provider.lock();
+    }
+    RNSkGraphiteTargetInfo info;
+    return provider && provider->getTargetInfo(&info);
+  }
+
 private:
   /**
    The target to record against: the view's surface when it has one, else

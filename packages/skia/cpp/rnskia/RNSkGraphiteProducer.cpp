@@ -38,7 +38,7 @@ void RNSkGraphiteProducer::setTarget(
     std::shared_ptr<RNSkGraphiteTarget> target) {
   std::lock_guard<std::mutex> lock(_mutex);
   _target = std::move(target);
-  _dirty = true;
+  _schedule.redrawRequested();
   kickLocked();
 }
 
@@ -68,8 +68,7 @@ void RNSkGraphiteProducer::replaceContent(std::shared_ptr<Recorder> recorder,
     std::lock_guard<std::mutex> lock(_mutex);
     retiredRecorder = std::exchange(_recorder, std::move(recorder));
     retiredPicture = std::exchange(_picture, std::move(picture));
-    _generation++;
-    _dirty = dirty;
+    _schedule.contentReplaced(dirty);
     if (dirty) {
       kickLocked();
     }
@@ -109,7 +108,7 @@ bool RNSkGraphiteProducer::applyUpdates(jsi::Runtime &runtime,
     return false;
   }
   std::lock_guard<std::mutex> lock(_mutex);
-  _dirty = true;
+  _schedule.redrawRequested();
   kickLocked();
   return true;
 }
@@ -127,47 +126,51 @@ bool RNSkGraphiteProducer::readUpdates(jsi::Runtime &runtime, double recorderId,
 bool RNSkGraphiteProducer::produceNow() {
   {
     std::lock_guard<std::mutex> lock(_mutex);
-    if (_inFlight || _presentPending || _target == nullptr ||
-        (_recorder == nullptr && _picture == nullptr)) {
+    if (!canStartFrameLocked()) {
       return false;
     }
-    _inFlight = true;
+    _schedule.frameScheduled();
   }
   produce();
   std::lock_guard<std::mutex> lock(_mutex);
-  return _presentPending;
+  return _schedule.isPresentPending();
 }
 
 void RNSkGraphiteProducer::whenFrameReady(std::function<void()> callback) {
   uint64_t generation;
   {
     std::lock_guard<std::mutex> lock(_mutex);
-    generation = std::max<uint64_t>(_generation, 1);
+    generation = _schedule.awaitedGeneration();
   }
   _readyWaiters.wait(generation, std::move(callback));
 }
 
 bool RNSkGraphiteProducer::requestFrame() {
   std::lock_guard<std::mutex> lock(_mutex);
-  _dirty = true;
+  _schedule.redrawRequested();
   kickLocked();
   return _target != nullptr && (_recorder != nullptr || _picture != nullptr);
 }
 
 void RNSkGraphiteProducer::onFramePresented() {
   std::lock_guard<std::mutex> lock(_mutex);
-  _presentPending = false;
-  if (_dirty) {
+  if (_schedule.framePresented()) {
     kickLocked();
   }
 }
 
+bool RNSkGraphiteProducer::canStartFrameLocked() {
+  const auto target = _target;
+  return _schedule.canStart(target != nullptr,
+                            _recorder != nullptr || _picture != nullptr,
+                            [&target]() { return target->hasSurface(); });
+}
+
 void RNSkGraphiteProducer::kickLocked() {
-  if (_inFlight || _presentPending || _target == nullptr ||
-      (_recorder == nullptr && _picture == nullptr)) {
+  if (!canStartFrameLocked()) {
     return;
   }
-  _inFlight = true;
+  _schedule.frameScheduled();
   std::weak_ptr<RNSkGraphiteProducer> weakThis = weak_from_this();
   RNSkThreadPool::getInstance().post([weakThis]() {
     if (auto self = weakThis.lock()) {
@@ -186,8 +189,7 @@ void RNSkGraphiteProducer::produce() {
     target = _target;
     recorder = _recorder;
     picture = _picture;
-    generation = _generation;
-    _dirty = false;
+    generation = _schedule.frameBegan();
   }
   std::shared_ptr<RNSkGraphiteRecording> recording;
   if (target && (recorder || picture)) {
@@ -221,27 +223,19 @@ void RNSkGraphiteProducer::produce() {
   const bool submitted = recording != nullptr;
   {
     std::lock_guard<std::mutex> lock(_mutex);
-    _inFlight = false;
+    // Submitted under the lock: a frame presented in between (a redraw
+    // replaying the last one) would otherwise clear the pending present
+    // before the recording is even queued.
+    const bool requested = _schedule.frameFinished(submitted, generation);
     if (submitted) {
-      // The next job starts when this frame is on screen. Submitted under the
-      // lock: a frame presented in between (a redraw replaying the last one)
-      // would otherwise clear the flag before the recording is even queued.
-      _presentPending = true;
       target->submit(std::move(recording));
+    }
+    if (requested) {
+      kickLocked();
     }
   }
   if (submitted) {
     _readyWaiters.ready(generation);
-    return;
-  }
-  std::lock_guard<std::mutex> lock(_mutex);
-  // Nothing was recorded: keep the content dirty so that the next request
-  // (a surface, a resize) records it. A request that landed while this job
-  // ran was only noted as dirty; it starts the next job now.
-  const bool requested = _dirty;
-  _dirty = true;
-  if (requested) {
-    kickLocked();
   }
 }
 
