@@ -8,6 +8,7 @@
 
 #include <jsi/jsi.h>
 
+#include "RNSkFrameSchedule.h"
 #include "RNSkFrameReadyWaiters.h"
 #include "include/core/SkRefCnt.h"
 
@@ -134,10 +135,9 @@ private:
   std::shared_ptr<RNSkGraphiteTarget> _target;
   std::shared_ptr<Recorder> _recorder;
   sk_sp<SkPicture> _picture;
-  bool _dirty = false;
-  bool _inFlight = false;
-  bool _presentPending = false;
-  uint64_t _generation = 0;
+  RNSkFrameSchedule _schedule;
+
+  bool canStartFrameLocked();
   RNSkFrameReadyWaiters _readyWaiters;
 };
 
