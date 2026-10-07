@@ -1,20 +1,22 @@
 #include "RNSkPipelineStorage.h"
 
+#include <dirent.h>
+#include <errno.h>
+#include <ftw.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <functional>
-#include <iterator>
-#include <system_error>
 #include <thread>
 #include <utility>
 
 #include "utils/RNSkLog.h"
 
 namespace RNSkia {
-
-namespace fs = std::filesystem;
 
 namespace {
 
@@ -55,14 +57,88 @@ uint64_t readLittleEndian(const uint8_t *bytes, size_t byteCount) {
   return value;
 }
 
-bool readFile(const fs::path &path, std::vector<uint8_t> *contents) {
-  std::ifstream file(path, std::ios::binary);
-  if (!file) {
+std::string join(const std::string &directory, const std::string &name) {
+  return directory + "/" + name;
+}
+
+bool endsWith(const std::string &text, const char *suffix) {
+  const size_t length = std::strlen(suffix);
+  return text.size() >= length &&
+         text.compare(text.size() - length, length, suffix) == 0;
+}
+
+bool exists(const std::string &path) {
+  struct stat info;
+  return stat(path.c_str(), &info) == 0;
+}
+
+bool makeDirectory(const std::string &path) {
+  if (mkdir(path.c_str(), 0700) == 0) {
+    return true;
+  }
+  struct stat info;
+  return errno == EEXIST && stat(path.c_str(), &info) == 0 &&
+         S_ISDIR(info.st_mode);
+}
+
+bool makeDirectories(const std::string &path) {
+  for (size_t slash = path.find('/', 1); slash != std::string::npos;
+       slash = path.find('/', slash + 1)) {
+    if (!makeDirectory(path.substr(0, slash))) {
+      return false;
+    }
+  }
+  return makeDirectory(path);
+}
+
+int removeEntry(const char *path, const struct stat *, int, struct FTW *) {
+  return remove(path);
+}
+
+bool removeTree(const std::string &path) {
+  return nftw(path.c_str(), removeEntry, 16, FTW_DEPTH | FTW_PHYS) == 0;
+}
+
+bool listDirectory(const std::string &path, std::vector<std::string> *names) {
+  DIR *directory = opendir(path.c_str());
+  if (directory == nullptr) {
     return false;
   }
-  contents->assign(std::istreambuf_iterator<char>(file),
-                   std::istreambuf_iterator<char>());
-  return !file.bad();
+  while (struct dirent *entry = readdir(directory)) {
+    const std::string name = entry->d_name;
+    if (name != "." && name != "..") {
+      names->push_back(name);
+    }
+  }
+  closedir(directory);
+  return true;
+}
+
+bool readFile(const std::string &path, std::vector<uint8_t> *contents) {
+  FILE *file = fopen(path.c_str(), "rb");
+  if (file == nullptr) {
+    return false;
+  }
+  contents->clear();
+  uint8_t buffer[16384];
+  size_t read = 0;
+  while ((read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+    contents->insert(contents->end(), buffer, buffer + read);
+  }
+  const bool failed = ferror(file) != 0;
+  fclose(file);
+  return !failed;
+}
+
+bool writeFile(const std::string &path, const std::vector<uint8_t> &contents) {
+  FILE *file = fopen(path.c_str(), "wb");
+  if (file == nullptr) {
+    return false;
+  }
+  const bool written =
+      contents.empty() ||
+      fwrite(contents.data(), 1, contents.size(), file) == contents.size();
+  return fclose(file) == 0 && written;
 }
 
 } // namespace
@@ -131,36 +207,30 @@ RNSkPipelineStorage::Open(const std::string &cacheDirectory,
   if (cacheDirectory.empty() || version.empty()) {
     return nullptr;
   }
-  const fs::path parent = fs::path(cacheDirectory) / kStorageDirectoryName /
-                          kPipelineCacheDirectoryName;
-  const fs::path root = parent / version;
-  const fs::path blobDirectory = root / kBlobDirectoryName;
-  const fs::path pipelineDirectory = root / kPipelineDirectoryName;
+  const std::string parent = join(join(cacheDirectory, kStorageDirectoryName),
+                                  kPipelineCacheDirectoryName);
+  const std::string root = join(parent, version);
+  const std::string blobDirectory = join(root, kBlobDirectoryName);
+  const std::string pipelineDirectory = join(root, kPipelineDirectoryName);
 
-  std::error_code error;
-  fs::create_directories(blobDirectory, error);
-  if (!error) {
-    fs::create_directories(pipelineDirectory, error);
-  }
-  if (error) {
+  if (!makeDirectories(blobDirectory) || !makeDirectories(pipelineDirectory)) {
     RNSkLogger::logToConsole(
         "The pipeline cache could not create %s: %s. Pipelines will not be "
         "cached on disk.",
-        root.c_str(), error.message().c_str());
+        root.c_str(), std::strerror(errno));
     return nullptr;
   }
 
-  for (fs::directory_iterator it(parent, error), end; !error && it != end;
-       it.increment(error)) {
-    if (it->path().filename() == version) {
+  std::vector<std::string> versions;
+  listDirectory(parent, &versions);
+  for (const auto &name : versions) {
+    if (name == version) {
       continue;
     }
-    std::error_code removeError;
-    fs::remove_all(it->path(), removeError);
-    if (removeError) {
+    if (!removeTree(join(parent, name))) {
       RNSkLogger::logToConsole(
           "The pipeline cache could not remove the stale directory %s: %s.",
-          it->path().c_str(), removeError.message().c_str());
+          join(parent, name).c_str(), std::strerror(errno));
     }
   }
 
@@ -168,56 +238,43 @@ RNSkPipelineStorage::Open(const std::string &cacheDirectory,
       new RNSkPipelineStorage(root, blobDirectory, pipelineDirectory));
 }
 
-RNSkPipelineStorage::RNSkPipelineStorage(fs::path root, fs::path blobDirectory,
-                                         fs::path pipelineDirectory)
+RNSkPipelineStorage::RNSkPipelineStorage(std::string root,
+                                         std::string blobDirectory,
+                                         std::string pipelineDirectory)
     : _root(std::move(root)), _blobDirectory(std::move(blobDirectory)),
       _pipelineDirectory(std::move(pipelineDirectory)) {}
 
-fs::path RNSkPipelineStorage::blobPath(const uint8_t *key,
-                                       size_t keySize) const {
-  return _blobDirectory /
-         (RNSkPipelineStorageFormat::HashName(key, keySize) + kBlobExtension);
+std::string RNSkPipelineStorage::blobPath(const uint8_t *key,
+                                          size_t keySize) const {
+  return join(_blobDirectory,
+              RNSkPipelineStorageFormat::HashName(key, keySize) +
+                  kBlobExtension);
 }
 
-fs::path RNSkPipelineStorage::pipelinePath(const SkData &pipelineKey,
-                                           const char *extension) const {
-  return _pipelineDirectory / (RNSkPipelineStorageFormat::HashName(
-                                   pipelineKey.bytes(), pipelineKey.size()) +
-                               extension);
+std::string RNSkPipelineStorage::pipelinePath(const SkData &pipelineKey,
+                                              const char *extension) const {
+  return join(_pipelineDirectory, RNSkPipelineStorageFormat::HashName(
+                                      pipelineKey.bytes(), pipelineKey.size()) +
+                                      extension);
 }
 
 bool RNSkPipelineStorage::writeAtomically(
-    const fs::path &path, const std::vector<uint8_t> &contents) const {
-  const fs::path temporary =
-      path.string() + ".tmp-" +
+    const std::string &path, const std::vector<uint8_t> &contents) const {
+  const std::string temporary =
+      path + ".tmp-" +
       std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) +
       "-" + std::to_string(_nextTemporaryId.fetch_add(1));
-  {
-    std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-    if (!file) {
-      RNSkLogger::logToConsole("The pipeline cache could not open %s.",
-                               temporary.c_str());
-      return false;
-    }
-    file.write(reinterpret_cast<const char *>(contents.data()),
-               static_cast<std::streamsize>(contents.size()));
-    if (!file) {
-      RNSkLogger::logToConsole("The pipeline cache could not write %s.",
-                               temporary.c_str());
-      file.close();
-      std::error_code ignored;
-      fs::remove(temporary, ignored);
-      return false;
-    }
+  if (!writeFile(temporary, contents)) {
+    RNSkLogger::logToConsole("The pipeline cache could not write %s: %s.",
+                             temporary.c_str(), std::strerror(errno));
+    unlink(temporary.c_str());
+    return false;
   }
-  std::error_code error;
-  fs::rename(temporary, path, error);
-  if (error) {
-    RNSkLogger::logToConsole("The pipeline cache could not move %s into "
-                             "place: %s.",
-                             path.c_str(), error.message().c_str());
-    std::error_code ignored;
-    fs::remove(temporary, ignored);
+  if (rename(temporary.c_str(), path.c_str()) != 0) {
+    RNSkLogger::logToConsole(
+        "The pipeline cache could not move %s into place: %s.", path.c_str(),
+        std::strerror(errno));
+    unlink(temporary.c_str());
     return false;
   }
   return true;
@@ -259,11 +316,9 @@ void RNSkPipelineStorage::storePipelineKey(const SkData &pipelineKey) const {
   if (pipelineKey.empty()) {
     return;
   }
-  const fs::path path = pipelinePath(pipelineKey, kPipelineKeyExtension);
-  std::error_code error;
-  if (fs::exists(path, error) ||
-      fs::exists(pipelinePath(pipelineKey, kRejectedPipelineKeyExtension),
-                 error)) {
+  const std::string path = pipelinePath(pipelineKey, kPipelineKeyExtension);
+  if (exists(path) ||
+      exists(pipelinePath(pipelineKey, kRejectedPipelineKeyExtension))) {
     return;
   }
   writeAtomically(
@@ -273,34 +328,35 @@ void RNSkPipelineStorage::storePipelineKey(const SkData &pipelineKey) const {
 
 std::vector<sk_sp<SkData>> RNSkPipelineStorage::loadPipelineKeys() const {
   std::vector<sk_sp<SkData>> keys;
-  std::error_code error;
-  for (fs::directory_iterator it(_pipelineDirectory, error), end;
-       !error && it != end; it.increment(error)) {
-    if (it->path().extension() != kPipelineKeyExtension) {
+  std::vector<std::string> names;
+  if (!listDirectory(_pipelineDirectory, &names)) {
+    RNSkLogger::logToConsole("The pipeline cache could not list %s: %s.",
+                             _pipelineDirectory.c_str(), std::strerror(errno));
+    return keys;
+  }
+  for (const auto &name : names) {
+    if (!endsWith(name, kPipelineKeyExtension)) {
       continue;
     }
     std::vector<uint8_t> contents;
-    if (!readFile(it->path(), &contents) || contents.empty()) {
+    if (!readFile(join(_pipelineDirectory, name), &contents) ||
+        contents.empty()) {
       continue;
     }
     keys.push_back(SkData::MakeWithCopy(contents.data(), contents.size()));
-  }
-  if (error) {
-    RNSkLogger::logToConsole("The pipeline cache could not list %s: %s.",
-                             _pipelineDirectory.c_str(),
-                             error.message().c_str());
   }
   return keys;
 }
 
 void RNSkPipelineStorage::rejectPipelineKey(const SkData &pipelineKey) const {
-  std::error_code error;
-  fs::rename(pipelinePath(pipelineKey, kPipelineKeyExtension),
-             pipelinePath(pipelineKey, kRejectedPipelineKeyExtension), error);
-  if (error) {
+  if (rename(
+          pipelinePath(pipelineKey, kPipelineKeyExtension).c_str(),
+          pipelinePath(pipelineKey, kRejectedPipelineKeyExtension).c_str()) !=
+          0 &&
+      errno != ENOENT) {
     RNSkLogger::logToConsole("The pipeline cache could not set aside a "
                              "pipeline key that cannot be precompiled: %s.",
-                             error.message().c_str());
+                             std::strerror(errno));
   }
 }
 
