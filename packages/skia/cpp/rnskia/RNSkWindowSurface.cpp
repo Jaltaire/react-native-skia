@@ -82,10 +82,12 @@ void RNSkWindowSurface::detach() {
   _nativeHandle = nullptr;
 }
 
-void RNSkWindowSurface::setLayoutSize(int width, int height) {
+bool RNSkWindowSurface::setLayoutSize(int width, int height) {
   std::lock_guard<std::mutex> lock(_targetInfoMutex);
+  const bool changed = width != _layoutWidth || height != _layoutHeight;
   _layoutWidth = width;
   _layoutHeight = height;
+  return changed && width > 0 && height > 0;
 }
 
 bool RNSkWindowSurface::getLayoutSize(int *width, int *height) {
