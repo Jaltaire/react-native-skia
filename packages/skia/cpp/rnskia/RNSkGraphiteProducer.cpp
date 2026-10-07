@@ -112,6 +112,30 @@ bool RNSkGraphiteProducer::applyUpdates(jsi::Runtime &runtime,
   return true;
 }
 
+bool RNSkGraphiteProducer::readUpdates(jsi::Runtime &runtime, double recorderId,
+                                       const jsi::Array &values) {
+  std::shared_ptr<Recorder> recorder;
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    recorder = _recorder;
+  }
+  return applyUpdatesTo(recorder, runtime, recorderId, values);
+}
+
+bool RNSkGraphiteProducer::produceNow() {
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_inFlight || _presentPending || _target == nullptr ||
+        (_recorder == nullptr && _picture == nullptr)) {
+      return false;
+    }
+    _inFlight = true;
+  }
+  produce();
+  std::lock_guard<std::mutex> lock(_mutex);
+  return _presentPending;
+}
+
 bool RNSkGraphiteProducer::requestFrame() {
   std::lock_guard<std::mutex> lock(_mutex);
   _dirty = true;
