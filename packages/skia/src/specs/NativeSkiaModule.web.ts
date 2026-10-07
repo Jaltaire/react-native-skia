@@ -109,6 +109,19 @@ global.SkiaViewApi = {
     }
     return view.getContext();
   },
+  whenFrameReady(nativeId: number) {
+    return new Promise<void>((resolve, reject) => {
+      if (!this.views[`${nativeId}`]) {
+        reject(
+          new Error(
+            `Cannot wait for a frame: view with nativeID ${nativeId} is not registered (it may have unmounted)`
+          )
+        );
+        return;
+      }
+      requestAnimationFrame(() => resolve());
+    });
+  },
   makeImageSnapshotAsync(nativeId: number, rect?: SkRect) {
     return new Promise((resolve, reject) => {
       const view = this.views[`${nativeId}`];

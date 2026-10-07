@@ -1,10 +1,14 @@
 #pragma once
 
+#include <cstdint>
+#include <functional>
+
 #include <memory>
 #include <mutex>
 
 #include <jsi/jsi.h>
 
+#include "RNSkFrameReadyWaiters.h"
 #include "include/core/SkRefCnt.h"
 
 class SkCanvas;
@@ -60,6 +64,8 @@ public:
   void setPicture(sk_sp<SkPicture> picture);
 
   bool hasContent();
+
+  void whenFrameReady(std::function<void()> callback);
 
   /**
    Drops the content without scheduling a frame: the host view is being torn
@@ -131,6 +137,8 @@ private:
   bool _dirty = false;
   bool _inFlight = false;
   bool _presentPending = false;
+  uint64_t _generation = 0;
+  RNSkFrameReadyWaiters _readyWaiters;
 };
 
 } // namespace RNSkia

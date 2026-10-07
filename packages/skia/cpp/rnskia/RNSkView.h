@@ -318,6 +318,10 @@ public:
 
   void recordFrame() { _producer->requestFrame(); }
 
+  void whenFrameReady(std::function<void()> callback) {
+    _producer->whenFrameReady(std::move(callback));
+  }
+
   bool hasQueuedRecordings() {
     auto target = getTarget();
     return target && target->hasQueued();
