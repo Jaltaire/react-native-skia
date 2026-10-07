@@ -281,6 +281,14 @@ public class SkiaView extends ReactViewGroup implements SkiaViewAPI, Choreograph
         mFrameScheduler.requestFrame(mKind);
     }
 
+    @DoNotStrip
+    public void onPresentedInStep() {
+        if (mView instanceof SkiaTextureView textureView) {
+            textureView.takePresentedFrame();
+        }
+        mFrameRateVote.onFramePresented();
+    }
+
     @Override
     public void doFrame(long frameTimeNanos) {
         mFrameScheduler.onFrame(mKind);
