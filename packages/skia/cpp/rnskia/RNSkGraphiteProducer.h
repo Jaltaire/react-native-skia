@@ -83,6 +83,11 @@ public:
                              jsi::Runtime &runtime, double recorderId,
                              const jsi::Array &values);
 
+  bool readUpdates(jsi::Runtime &runtime, double recorderId,
+                   const jsi::Array &values);
+
+  bool produceNow();
+
   /**
    Marks the content dirty and schedules a frame if one can start. Returns
    whether a frame is coming at all: there is content and a target to record
