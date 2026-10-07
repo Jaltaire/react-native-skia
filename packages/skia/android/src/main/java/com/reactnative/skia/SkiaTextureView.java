@@ -23,6 +23,12 @@ public class SkiaTextureView extends TextureView implements TextureView.SurfaceT
         setSurfaceTextureListener(this);
     }
 
+    void takePresentedFrame() {
+        boolean opaque = isOpaque();
+        setOpaque(!opaque);
+        setOpaque(opaque);
+    }
+
     @Override
     public void onSurfaceTextureAvailable(@NonNull SurfaceTexture surfaceTexture, int width, int height) {
         Log.i(tag, "onSurfaceTextureAvailable:  " + width + "x" + height);

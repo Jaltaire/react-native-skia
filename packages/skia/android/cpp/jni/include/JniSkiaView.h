@@ -127,6 +127,15 @@ private:
           javaPart->getClass()->getMethod<void()>("scheduleFrame");
       method(javaPart);
     });
+    _view->setInStepPresentHandler([weakJava]() {
+      auto javaPart = weakJava.lockLocal();
+      if (!javaPart) {
+        return;
+      }
+      static const auto method =
+          javaPart->getClass()->getMethod<void()>("onPresentedInStep");
+      method(javaPart);
+    });
   }
 
   /**
