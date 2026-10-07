@@ -44,7 +44,7 @@ public:
    (SurfaceView or TextureView) has exactly this size, so a frame recorded
    before the surface exists already matches it. Main thread.
    */
-  void setLayoutSize(int width, int height);
+  bool setLayoutSize(int width, int height);
 
   void surfaceAvailable(jobject surface, int width, int height, bool isSurface,
                         bool highBitDepth);

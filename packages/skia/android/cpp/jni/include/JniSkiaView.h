@@ -66,7 +66,9 @@ protected:
   void surfaceDestroyed() { _provider->surfaceDestroyed(); }
 
   void setLayoutSize(int width, int height) {
-    _provider->setLayoutSize(width, height);
+    if (_provider->setLayoutSize(width, height)) {
+      _view->recordFrame();
+    }
   }
 
   void registerView(int nativeId) {

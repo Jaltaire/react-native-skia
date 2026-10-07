@@ -316,6 +316,8 @@ public:
     return target->hasQueued();
   }
 
+  void recordFrame() { _producer->requestFrame(); }
+
   bool hasQueuedRecordings() {
     auto target = getTarget();
     return target && target->hasQueued();

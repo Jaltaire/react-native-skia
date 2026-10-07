@@ -100,10 +100,12 @@ bool RNSkAndroidCanvasProvider::getTargetInfo(RNSkGraphiteTargetInfo *info) {
   return true;
 }
 
-void RNSkAndroidCanvasProvider::setLayoutSize(int width, int height) {
+bool RNSkAndroidCanvasProvider::setLayoutSize(int width, int height) {
   std::lock_guard<std::mutex> lock(_targetInfoMutex);
+  const bool changed = width != _layoutWidth || height != _layoutHeight;
   _layoutWidth = width;
   _layoutHeight = height;
+  return changed && width > 0 && height > 0;
 }
 
 bool RNSkAndroidCanvasProvider::getLayoutSize(int *width, int *height) {
