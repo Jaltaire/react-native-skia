@@ -44,6 +44,7 @@ export interface ISkiaViewApi {
   makeImageSnapshot: (nativeId: number, rect?: SkRect) => SkImage;
   makeImageSnapshotAsync: (nativeId: number, rect?: SkRect) => Promise<SkImage>;
   size: (nativeId: number) => SkSize;
+  whenFrameReady: (nativeId: number) => Promise<void>;
   /**
    * The recording side of a view: its native id, the layout size in points,
    * and the props its surface format follows from.

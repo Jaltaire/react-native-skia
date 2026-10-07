@@ -2,6 +2,7 @@
 // RNSkGraphiteProducer.h (which the view headers include on their own).
 #include "RNSkGraphiteProducer.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -67,6 +68,7 @@ void RNSkGraphiteProducer::replaceContent(std::shared_ptr<Recorder> recorder,
     std::lock_guard<std::mutex> lock(_mutex);
     retiredRecorder = std::exchange(_recorder, std::move(recorder));
     retiredPicture = std::exchange(_picture, std::move(picture));
+    _generation++;
     _dirty = dirty;
     if (dirty) {
       kickLocked();
@@ -136,6 +138,15 @@ bool RNSkGraphiteProducer::produceNow() {
   return _presentPending;
 }
 
+void RNSkGraphiteProducer::whenFrameReady(std::function<void()> callback) {
+  uint64_t generation;
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    generation = std::max<uint64_t>(_generation, 1);
+  }
+  _readyWaiters.wait(generation, std::move(callback));
+}
+
 bool RNSkGraphiteProducer::requestFrame() {
   std::lock_guard<std::mutex> lock(_mutex);
   _dirty = true;
@@ -169,11 +180,13 @@ void RNSkGraphiteProducer::produce() {
   std::shared_ptr<RNSkGraphiteTarget> target;
   std::shared_ptr<Recorder> recorder;
   sk_sp<SkPicture> picture;
+  uint64_t generation;
   {
     std::lock_guard<std::mutex> lock(_mutex);
     target = _target;
     recorder = _recorder;
     picture = _picture;
+    generation = _generation;
     _dirty = false;
   }
   std::shared_ptr<RNSkGraphiteRecording> recording;
@@ -205,16 +218,23 @@ void RNSkGraphiteProducer::produce() {
     RNSkLogger::logToConsole(
         "Canvas: a pipeline of the frame failed to compile.");
   }
-  std::lock_guard<std::mutex> lock(_mutex);
-  _inFlight = false;
-  if (recording != nullptr) {
-    // The next job starts when this frame is on screen. Submitted under the
-    // lock: a frame presented in between (a redraw replaying the last one)
-    // would otherwise clear the flag before the recording is even queued.
-    _presentPending = true;
-    target->submit(std::move(recording));
+  const bool submitted = recording != nullptr;
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _inFlight = false;
+    if (submitted) {
+      // The next job starts when this frame is on screen. Submitted under the
+      // lock: a frame presented in between (a redraw replaying the last one)
+      // would otherwise clear the flag before the recording is even queued.
+      _presentPending = true;
+      target->submit(std::move(recording));
+    }
+  }
+  if (submitted) {
+    _readyWaiters.ready(generation);
     return;
   }
+  std::lock_guard<std::mutex> lock(_mutex);
   // Nothing was recorded: keep the content dirty so that the next request
   // (a surface, a resize) records it. A request that landed while this job
   // ran was only noted as dirty; it starts the next job now.
