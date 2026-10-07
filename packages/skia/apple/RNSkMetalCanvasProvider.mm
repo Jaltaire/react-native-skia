@@ -12,6 +12,7 @@ RNSkMetalCanvasProvider::RNSkMetalCanvasProvider(
 #pragma clang diagnostic ignored "-Wunguarded-availability-new"
   _layer = [CAMetalLayer layer];
 #pragma clang diagnostic pop
+  _layer.presentsWithTransaction = YES;
 }
 
 RNSkMetalCanvasProvider::~RNSkMetalCanvasProvider() {}
