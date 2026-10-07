@@ -117,6 +117,7 @@ static bool appIsBackgrounded() {
 #pragma clang diagnostic ignored "-Wunguarded-availability-new"
   _layer = [CAMetalLayer layer];
 #pragma clang diagnostic pop
+  _layer.presentsWithTransaction = YES;
   _surface = std::make_shared<RNSkia::RNSkWindowSurface>();
   _surface->setHighBitDepth(_highBitDepth);
   // The window belongs to the main thread, and is left alone while the app
