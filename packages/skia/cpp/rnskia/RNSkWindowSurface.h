@@ -74,9 +74,10 @@ public:
 
   /**
    The pixel size the platform laid the view out with, which the window gets
-   when it appears. Any thread.
+   when it appears. Returns whether the size changed to one a frame can be
+   recorded at. Any thread.
    */
-  void setLayoutSize(int width, int height);
+  bool setLayoutSize(int width, int height);
 
   /**
    The size in pixels the surface will have, known from the platform layout

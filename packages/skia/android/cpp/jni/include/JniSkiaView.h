@@ -82,7 +82,9 @@ protected:
    before the surface exists already matches it. Main thread.
    */
   void setLayoutSize(int width, int height) {
-    _surface->setLayoutSize(width, height);
+    if (_surface->setLayoutSize(width, height)) {
+      _view->recordFrame();
+    }
   }
 
   /**
