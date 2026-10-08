@@ -4,6 +4,7 @@
 #include <cstdlib>
 
 using RNSkia::RNSkFrameSchedule;
+using RNSkia::RNSkFrameStart;
 
 namespace {
 
@@ -36,11 +37,13 @@ bool startsWithoutSurface(const RNSkFrameSchedule &schedule) {
   return schedule.canStart(true, true, withoutSurface);
 }
 
+RNSkFrameStart at(uint64_t generation) { return {generation, generation}; }
+
 uint64_t runFrame(RNSkFrameSchedule &schedule, bool submitted) {
   schedule.frameScheduled();
-  const uint64_t generation = schedule.frameBegan().generation;
-  schedule.frameFinished(submitted, generation);
-  return generation;
+  const auto start = schedule.frameBegan();
+  schedule.frameFinished(submitted, start);
+  return start.generation;
 }
 
 RNSkFrameSchedule withContent() {
@@ -120,7 +123,7 @@ void testContentDuringASubmittedFrameStartsTheNextOne() {
   expect(!startsWithoutSurface(schedule),
          "Content replaced mid-frame is refused while the frame is in "
          "flight.");
-  const bool requested = schedule.frameFinished(true, first);
+  const bool requested = schedule.frameFinished(true, at(first));
   expect(requested,
          "A submitted frame reports the content that arrived while it was "
          "recorded.");
@@ -140,7 +143,7 @@ void testContentDuringASubmittedFrameWaitsForThePresentWithASurface() {
   schedule.frameScheduled();
   const uint64_t generation = schedule.frameBegan().generation;
   schedule.contentReplaced(true);
-  expect(schedule.frameFinished(true, generation),
+  expect(schedule.frameFinished(true, at(generation)),
          "The submitted frame reports the content that arrived mid-frame.");
   expect(!startsWithSurface(schedule),
          "With a surface, that content waits for the present.");
@@ -154,7 +157,7 @@ void testASubmittedFrameWithNothingNewRequestsNothing() {
   auto schedule = withContent();
   schedule.frameScheduled();
   const uint64_t generation = schedule.frameBegan().generation;
-  expect(!schedule.frameFinished(true, generation),
+  expect(!schedule.frameFinished(true, at(generation)),
          "A submitted frame that nothing changed during requests nothing.");
   expect(!schedule.framePresented(),
          "Its present starts nothing either.");
@@ -165,7 +168,7 @@ void testARedrawDuringASubmittedFrameIsKept() {
   schedule.frameScheduled();
   const uint64_t generation = schedule.frameBegan().generation;
   schedule.redrawRequested();
-  expect(schedule.frameFinished(true, generation),
+  expect(schedule.frameFinished(true, at(generation)),
          "A redraw asked for mid-frame is reported when the frame finishes.");
   expect(!startsWithoutSurface(schedule),
          "Without a surface, that redraw still waits for the present.");
@@ -177,7 +180,7 @@ void testAFrameThatRecordedNothingStaysDirty() {
   auto schedule = withContent();
   schedule.frameScheduled();
   const uint64_t generation = schedule.frameBegan().generation;
-  expect(!schedule.frameFinished(false, generation),
+  expect(!schedule.frameFinished(false, at(generation)),
          "A frame that recorded nothing, with no request during it, starts "
          "nothing.");
   expect(!schedule.isPresentPending(),
@@ -195,7 +198,7 @@ void testAFrameThatRecordedNothingReportsARequestDuringIt() {
   schedule.frameScheduled();
   const uint64_t generation = schedule.frameBegan().generation;
   schedule.redrawRequested();
-  expect(schedule.frameFinished(false, generation),
+  expect(schedule.frameFinished(false, at(generation)),
          "A request during a frame that recorded nothing starts the next "
          "frame.");
 }
@@ -221,11 +224,11 @@ void testSubmittedGenerationNeverGoesBack() {
   schedule.contentReplaced(true);
   schedule.frameScheduled();
   schedule.frameBegan();
-  schedule.frameFinished(true, 2);
+  schedule.frameFinished(true, at(2));
   schedule.framePresented();
   schedule.frameScheduled();
   schedule.frameBegan();
-  schedule.frameFinished(true, 1);
+  schedule.frameFinished(true, at(1));
   expect(!startsWithoutSurface(schedule),
          "An older frame finishing late does not make the newer content "
          "look unsubmitted.");
@@ -274,7 +277,7 @@ void testValuesUpdatedDuringAFrameAreNotCoveredByIt() {
   expect(start.revision < schedule.awaitedRevision(),
          "A frame that began before a value update does not satisfy a waiter "
          "for it.");
-  expect(schedule.frameFinished(true, start.generation),
+  expect(schedule.frameFinished(true, start),
          "The update made during the frame asks for the next one.");
 }
 
@@ -286,6 +289,68 @@ void testValuesUpdatedDoNotQueueFramesWithoutASurface() {
   expect(!startsWithoutSurface(schedule),
          "Without a surface, an animated value update waits for the "
          "unpresented frame instead of queueing another one.");
+}
+
+
+void testAWaitForNewerValuesQueuesAFrameWithoutASurface() {
+  auto schedule = withContent();
+  runFrame(schedule, true);
+  schedule.valuesUpdated();
+  schedule.redrawRequested();
+  expect(schedule.waitRequested(schedule.awaitedRevision()),
+         "A wait for values no submitted frame has drawn asks for a frame.");
+  expect(startsWithoutSurface(schedule),
+         "Without a surface, a frame a caller waits for queues behind the "
+         "unpresented one rather than waiting for a present that never "
+         "comes.");
+}
+
+void testAWaitForNewerValuesStillWaitsForThePresentWithASurface() {
+  auto schedule = withContent();
+  runFrame(schedule, true);
+  schedule.valuesUpdated();
+  schedule.waitRequested(schedule.awaitedRevision());
+  expect(!startsWithSurface(schedule),
+         "With a surface, the waited-for frame follows the present as usual.");
+}
+
+void testAWaitForDrawnValuesAsksForNothing() {
+  auto schedule = withContent();
+  schedule.valuesUpdated();
+  runFrame(schedule, true);
+  expect(!schedule.waitRequested(schedule.awaitedRevision()),
+         "A wait for values a submitted frame already drew needs no frame.");
+  expect(!startsWithoutSurface(schedule),
+         "Without a surface, a covered wait does not queue another frame.");
+}
+
+void testOnlyTheWaitedFrameQueuesWithoutASurface() {
+  auto schedule = withContent();
+  runFrame(schedule, true);
+  schedule.valuesUpdated();
+  schedule.waitRequested(schedule.awaitedRevision());
+  runFrame(schedule, true);
+  schedule.valuesUpdated();
+  schedule.redrawRequested();
+  expect(!startsWithoutSurface(schedule),
+         "Once the waited-for frame is queued, later animation steps wait "
+         "for the present again.");
+}
+
+void testSubmittedRevisionNeverGoesBack() {
+  auto schedule = withContent();
+  schedule.valuesUpdated();
+  schedule.valuesUpdated();
+  schedule.frameScheduled();
+  schedule.frameBegan();
+  schedule.frameFinished(true, {1, 3});
+  schedule.framePresented();
+  schedule.frameScheduled();
+  schedule.frameBegan();
+  schedule.frameFinished(true, {1, 2});
+  expect(!schedule.waitRequested(3),
+         "An older frame finishing late does not make newer values look "
+         "undrawn.");
 }
 
 } // namespace
@@ -312,6 +377,11 @@ int main() {
   testContentReplacedAdvancesTheRevision();
   testValuesUpdatedDuringAFrameAreNotCoveredByIt();
   testValuesUpdatedDoNotQueueFramesWithoutASurface();
+  testAWaitForNewerValuesQueuesAFrameWithoutASurface();
+  testAWaitForNewerValuesStillWaitsForThePresentWithASurface();
+  testAWaitForDrawnValuesAsksForNothing();
+  testOnlyTheWaitedFrameQueuesWithoutASurface();
+  testSubmittedRevisionNeverGoesBack();
   if (failures > 0) {
     std::fprintf(stderr, "%d failure(s)\n", failures);
     return EXIT_FAILURE;

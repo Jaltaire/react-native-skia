@@ -149,6 +149,10 @@ void RNSkGraphiteProducer::whenFrameReady(std::function<void()> callback) {
     revision = _schedule.awaitedRevision();
   }
   _readyWaiters.wait(revision, std::move(callback));
+  std::lock_guard<std::mutex> lock(_mutex);
+  if (_schedule.waitRequested(revision)) {
+    kickLocked();
+  }
 }
 
 bool RNSkGraphiteProducer::requestFrame() {
@@ -232,8 +236,7 @@ void RNSkGraphiteProducer::produce() {
     // Submitted under the lock: a frame presented in between (a redraw
     // replaying the last one) would otherwise clear the pending present
     // before the recording is even queued.
-    const bool requested =
-        _schedule.frameFinished(submitted, start.generation);
+    const bool requested = _schedule.frameFinished(submitted, start);
     if (submitted) {
       target->submit(std::move(recording));
     }
