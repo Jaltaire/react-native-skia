@@ -27,9 +27,9 @@ public:
    Whether a frame may start recording. One frame waits to be presented at a
    time, so that recording keeps pace with the display. A view without a
    surface presents nothing, though: there, newer content does not wait for
-   the unpresented frame and queues behind it, while redraws of the same
-   content still wait, so that the queue only grows by one frame per React
-   commit.
+   the unpresented frame and queues behind it, and so do animated values a
+   caller waits for, while other redraws of the same content still wait, so
+   that the queue only grows by one frame per React commit or wait.
    */
   bool canStart(bool hasTarget, bool hasContent,
                 const std::function<bool()> &hasSurface) const {
@@ -39,7 +39,9 @@ public:
     if (!_presentPending) {
       return true;
     }
-    return _generation > _submittedGeneration && !hasSurface();
+    const bool newer = _generation > _submittedGeneration ||
+                       _waitedRevision > _submittedRevision;
+    return newer && !hasSurface();
   }
 
   /**
@@ -86,12 +88,13 @@ public:
    was recorded: those requests were refused while the frame was in flight,
    so the owner starts the next frame now if the gate allows it.
    */
-  bool frameFinished(bool submitted, uint64_t generation) {
+  bool frameFinished(bool submitted, RNSkFrameStart start) {
     _inFlight = false;
     const bool requested = _dirty;
     if (submitted) {
       _presentPending = true;
-      _submittedGeneration = std::max(_submittedGeneration, generation);
+      _submittedGeneration = std::max(_submittedGeneration, start.generation);
+      _submittedRevision = std::max(_submittedRevision, start.revision);
     } else {
       _dirty = true;
     }
@@ -116,6 +119,16 @@ public:
     return std::max<uint64_t>(_revision, 1);
   }
 
+  /**
+   A caller waits for a frame of the revision. Returns whether no submitted
+   frame covers it yet, in which case the owner starts one if the gate
+   allows it: the wait lets a view without a surface queue that frame.
+   */
+  bool waitRequested(uint64_t revision) {
+    _waitedRevision = std::max(_waitedRevision, revision);
+    return revision > _submittedRevision;
+  }
+
   bool isPresentPending() const { return _presentPending; }
 
 private:
@@ -125,6 +138,8 @@ private:
   uint64_t _generation = 0;
   uint64_t _submittedGeneration = 0;
   uint64_t _revision = 0;
+  uint64_t _submittedRevision = 0;
+  uint64_t _waitedRevision = 0;
 };
 
 } // namespace RNSkia
