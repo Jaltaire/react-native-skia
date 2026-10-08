@@ -1,0 +1,38 @@
+[metal] Present inside the Core Animation transaction when the layer asks for it
+
+The Metal swapchain presents its drawable from the command buffer
+([MTLCommandBuffer presentDrawable:]), which reaches the screen on its own
+schedule, a frame or more away from the Core Animation layer changes made in
+the same main-thread step. A CAMetalLayer with presentsWithTransaction set asks
+for the opposite: the drawable is presented with [CAMetalDrawable present]
+after the work is scheduled, so it lands in the current transaction.
+SkiaView sets that flag, so a canvas moved by an animated value presents in
+the same transaction as the views moved alongside it.
+
+The same change is commit 9c560c615 on github.com/Jaltaire/dawn
+(branch main-jaltaire), on the Dawn commit Skia pins. Drop this patch once
+the pinned Dawn honours presentsWithTransaction itself: build-dawn.ts skips it
+when it is already present and fails when it no longer applies.
+
+diff --git a/src/dawn/native/metal/SwapChainMTL.mm b/src/dawn/native/metal/SwapChainMTL.mm
+index b9a9d07b3..0a9794f2c 100644
+--- a/src/dawn/native/metal/SwapChainMTL.mm
++++ b/src/dawn/native/metal/SwapChainMTL.mm
+@@ -95,9 +95,14 @@ MaybeError SwapChain::PresentImpl() {
+     DAWN_ASSERT(mCurrentDrawable != nullptr);
+ 
+     Queue* queue = ToBackend(GetDevice()->GetQueue());
+-    CommandRecordingContext* commandContext = queue->GetPendingCommandContext();
+-    [commandContext->GetCommands() presentDrawable:*mCurrentDrawable];
+-    DAWN_TRY(queue->SubmitPendingCommandBuffer());
++    if ([*mLayer presentsWithTransaction]) {
++        queue->WaitForCommandsToBeScheduled();
++        [*mCurrentDrawable present];
++    } else {
++        CommandRecordingContext* commandContext = queue->GetPendingCommandContext();
++        [commandContext->GetCommands() presentDrawable:*mCurrentDrawable];
++        DAWN_TRY(queue->SubmitPendingCommandBuffer());
++    }
+ 
+     mTexture->APIDestroy();
+     mTexture = nullptr;
