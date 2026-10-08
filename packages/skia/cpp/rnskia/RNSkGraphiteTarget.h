@@ -286,13 +286,13 @@ public:
 
   /** Whether the view has a surface to present to. */
   bool hasSurface() {
-    std::shared_ptr<RNSkCanvasProvider> provider;
+    std::shared_ptr<RNSkWindowSurface> surface;
     {
       std::lock_guard<std::mutex> lock(_stateMutex);
-      provider = _provider.lock();
+      surface = _surface.lock();
     }
     RNSkGraphiteTargetInfo info;
-    return provider && provider->getTargetInfo(&info);
+    return surface && surface->getTargetInfo(&info);
   }
 
 private:
