@@ -46,6 +46,8 @@ public:
 
   bool prefersP3ColorSpace() override { return _prefersP3ColorSpace; }
 
+  std::string getCacheDirectory() override;
+
   void runOnMainThread(std::function<void()>) override;
 
   virtual void performStreamOperation(

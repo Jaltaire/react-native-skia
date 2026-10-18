@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include "RNSkPipelineStorage.h"
 #include "webgpu/webgpu_cpp.h"
 
 #include "dawn/native/DawnNative.h"
@@ -252,15 +253,31 @@ struct DeviceLostListener {
   std::string creationFailure;
 };
 
+inline size_t loadPipelineBlob(size_t keySize, const uint8_t *key,
+                               size_t valueSize, uint8_t *value,
+                               void *userdata1, void *) {
+  return static_cast<const RNSkia::RNSkPipelineStorage *>(userdata1)->loadBlob(
+      key, keySize, value, valueSize);
+}
+
+inline void storePipelineBlob(size_t keySize, const uint8_t *key,
+                              size_t valueSize, const uint8_t *value,
+                              void *userdata1, void *) {
+  static_cast<const RNSkia::RNSkPipelineStorage *>(userdata1)->storeBlob(
+      key, keySize, value, valueSize);
+}
+
 // Create a Dawn device from the given adapter with the requested features.
 // Features not supported by the adapter are silently skipped. The device's
 // loss is reported to `listener` (see DeviceLostListener), or only logged
 // without one (a secondary device). Neither takes the process down: a lost
-// device fails its later operations, which the callers handle.
+// device fails its later operations, which the callers handle. With a
+// pipeline storage, Dawn loads and stores its compiled blobs through it.
 inline wgpu::Device
 requestDevice(dawn::native::Adapter &nativeAdapter,
               const std::vector<wgpu::FeatureName> &requestedFeatures,
-              DeviceLostListener *listener) {
+              DeviceLostListener *listener,
+              const RNSkia::RNSkPipelineStorage *pipelineStorage = nullptr) {
   wgpu::Adapter adapter = nativeAdapter.Get();
 
   // Filter to only features the adapter supports.
@@ -313,6 +330,19 @@ requestDevice(dawn::native::Adapter &nativeAdapter,
   togglesDesc.disabledToggles = kDisabledToggles;
 #endif
 
+  WGPUDawnCacheDeviceDescriptor cacheDesc =
+      WGPU_DAWN_CACHE_DEVICE_DESCRIPTOR_INIT;
+  if (pipelineStorage != nullptr) {
+    cacheDesc.dawnLoadCacheDataCallbackInfo.callback = loadPipelineBlob;
+    cacheDesc.dawnLoadCacheDataCallbackInfo.userdata1 =
+        const_cast<RNSkia::RNSkPipelineStorage *>(pipelineStorage);
+    cacheDesc.dawnStoreCacheDataCallbackInfo.callback = storePipelineBlob;
+    cacheDesc.dawnStoreCacheDataCallbackInfo.userdata1 =
+        const_cast<RNSkia::RNSkPipelineStorage *>(pipelineStorage);
+    togglesDesc.nextInChain =
+        reinterpret_cast<const wgpu::ChainedStruct *>(&cacheDesc);
+  }
+
   wgpu::DeviceDescriptor desc;
   desc.requiredFeatureCount = features.size();
   desc.requiredFeatures = features.data();
@@ -353,10 +383,11 @@ requestDevice(dawn::native::Adapter &nativeAdapter,
 }
 
 // `listener` is told of the primary device's loss (see DeviceLostListener)
-// and must outlive the device.
+// and must outlive the device, as must `pipelineStorage` when given.
 inline skgpu::graphite::DawnBackendContext
 createDawnBackendContext(dawn::native::Instance *instance,
-                         DeviceLostListener *listener) {
+                         DeviceLostListener *listener,
+                         const RNSkia::RNSkPipelineStorage *pipelineStorage) {
 
   auto matchedAdapter = getMatchedAdapter(instance);
   wgpu::Adapter adapter = matchedAdapter.Get();
@@ -430,7 +461,8 @@ createDawnBackendContext(dawn::native::Instance *instance,
 #endif
   };
 
-  wgpu::Device device = requestDevice(matchedAdapter, features, listener);
+  wgpu::Device device =
+      requestDevice(matchedAdapter, features, listener, pipelineStorage);
   if (!device) {
     std::string error =
         "React Native Skia could not create a GPU device on the " +

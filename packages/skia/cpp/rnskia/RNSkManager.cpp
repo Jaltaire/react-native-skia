@@ -22,6 +22,7 @@ RNSkManager::RNSkManager(
     : _jsRuntime(jsRuntime), _platformContext(platformContext),
       _jsCallInvoker(jsCallInvoker),
       _viewApi(std::make_shared<RNSkJsiViewApi>(platformContext)) {
+  DawnContext::setPipelineCacheDirectory(platformContext->getCacheDirectory());
   // The GPU is probed now, once, rather than by whichever view or image call
   // comes first: a device without one (no Vulkan 1.1 on Android) is logged
   // and reported to JS as Skia.gpu, instead of failing in different places

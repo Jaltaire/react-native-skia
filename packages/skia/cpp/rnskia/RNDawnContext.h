@@ -21,15 +21,18 @@
 
 #include "RNDawnUtils.h"
 #include "RNImageProvider.h"
+#include "RNSkPipelineStorage.h"
 #include "utils/RNSkLog.h"
 
 #include "include/core/SkColorSpace.h"
 #include "include/core/SkData.h"
+#include "include/core/SkMilestone.h"
 #include "include/gpu/graphite/BackendTexture.h"
 #include "include/gpu/graphite/Context.h"
 #include "include/gpu/graphite/ContextOptions.h"
 #include "include/gpu/graphite/GraphiteTypes.h"
 #include "include/gpu/graphite/Image.h"
+#include "include/gpu/graphite/PrecompileContext.h"
 #include "include/gpu/graphite/Recorder.h"
 #include "include/gpu/graphite/Recording.h"
 #include "include/gpu/graphite/Surface.h"
@@ -125,6 +128,21 @@ public:
    */
   static bool isDeviceLost() noexcept {
     return lostState().lost.load(std::memory_order_acquire);
+  }
+
+  static void setPipelineCacheDirectory(const std::string &directory) {
+    auto &config = pipelineCacheConfig();
+    std::lock_guard<std::mutex> lock(config.mutex);
+    if (config.contextCreated) {
+      if (directory != config.directory) {
+        RNSkLogger::logToConsole(
+            "The pipeline cache directory was set after the Dawn context was "
+            "created. Keeping %s.",
+            config.directory.c_str());
+      }
+      return;
+    }
+    config.directory = directory;
   }
 
   // Readbacks ----------------------------------------------------------------
@@ -561,12 +579,89 @@ private:
     return *result;
   }
 
+  struct PipelineCacheConfig {
+    std::mutex mutex;
+    std::string directory;
+    bool contextCreated = false;
+  };
+
+  static PipelineCacheConfig &pipelineCacheConfig() {
+    static auto *config = new PipelineCacheConfig();
+    return *config;
+  }
+
+  static std::string claimPipelineCacheDirectory() {
+    auto &config = pipelineCacheConfig();
+    std::lock_guard<std::mutex> lock(config.mutex);
+    config.contextCreated = true;
+    return config.directory;
+  }
+
+  static void
+  onPipelineCached(void *context,
+                   skgpu::graphite::ContextOptions::PipelineCacheOp op,
+                   const std::string &, uint32_t, bool fromPrecompile,
+                   sk_sp<SkData> pipelineData) {
+    if (op !=
+            skgpu::graphite::ContextOptions::PipelineCacheOp::kAddingPipeline ||
+        fromPrecompile || pipelineData == nullptr) {
+      return;
+    }
+    static_cast<const RNSkPipelineStorage *>(context)->storePipelineKey(
+        *pipelineData);
+  }
+
+  void startPrecompiling() {
+    auto keys = _pipelineStorage->loadPipelineKeys();
+    if (keys.empty()) {
+      return;
+    }
+    _precompileContext = fGraphiteContext->makePrecompileContext();
+    if (_precompileContext == nullptr) {
+      RNSkLogger::logToConsole(
+          "Graphite could not create a precompile context. Skipping %zu "
+          "cached pipelines.",
+          keys.size());
+      return;
+    }
+    _precompileThread = std::thread([this, keys = std::move(keys)]() {
+#if defined(__APPLE__)
+      pthread_setname_np("RNSkia Precompile");
+#elif defined(__ANDROID__)
+      pthread_setname_np(pthread_self(), "RNSkia Precompile");
+#endif
+      size_t compiled = 0;
+      size_t rejected = 0;
+      for (const auto &key : keys) {
+        if (_stopPrecompiling.load()) {
+          break;
+        }
+        if (_precompileContext->precompile(key)) {
+          ++compiled;
+        } else {
+          RNSkLogger::logToConsole(
+              "PIPELINE PRECOMPILE REJECTED: %s",
+              _precompileContext->getPipelineLabel(key).c_str());
+          _pipelineStorage->rejectPipelineKey(*key);
+          ++rejected;
+        }
+      }
+      RNSkLogger::logToConsole(
+          "PIPELINE PRECOMPILE: %zu compiled | %zu rejected | %zu cached",
+          compiled, rejected, keys.size());
+    });
+  }
+
   // Declared before the device it listens to, so that it outlives it.
   DawnUtils::DeviceLostListener _deviceLostListener;
+  std::unique_ptr<RNSkPipelineStorage> _pipelineStorage;
   std::unique_ptr<dawn::native::Instance> instance;
   std::unique_ptr<skgpu::graphite::Context> fGraphiteContext;
   skgpu::graphite::DawnBackendContext backendContext;
   std::mutex _mutex;
+  std::unique_ptr<skgpu::graphite::PrecompileContext> _precompileContext;
+  std::thread _precompileThread;
+  std::atomic<bool> _stopPrecompiling{false};
 
   // The readback poller: started on the first readback, it checks the
   // context for finished GPU work while readbacks are pending and sleeps
@@ -654,13 +749,19 @@ private:
     _deviceLostListener.onLost = [](const std::string &message) {
       DawnContext::markDeviceLost(message);
     };
-    backendContext = DawnUtils::createDawnBackendContext(instance.get(),
-                                                         &_deviceLostListener);
+    _pipelineStorage = RNSkPipelineStorage::Open(
+        claimPipelineCacheDirectory(), "m" + std::to_string(SK_MILESTONE));
+    backendContext = DawnUtils::createDawnBackendContext(
+        instance.get(), &_deviceLostListener, _pipelineStorage.get());
 
     skgpu::graphite::ContextOptions ctxOptions;
     skgpu::graphite::ContextOptionsPriv contextOptionsPriv;
     ctxOptions.fOptionsPriv = &contextOptionsPriv;
     ctxOptions.fOptionsPriv->fStoreContextRefInRecorder = true;
+    if (_pipelineStorage != nullptr) {
+      ctxOptions.fPipelineCallbackContext = _pipelineStorage.get();
+      ctxOptions.fPipelineCachingCallback = onPipelineCached;
+    }
     fGraphiteContext =
         skgpu::graphite::ContextFactory::MakeDawn(backendContext, ctxOptions);
 
@@ -669,9 +770,18 @@ private:
           "React Native Skia could not create its Graphite context on the "
           "GPU device.");
     }
+
+    if (_pipelineStorage != nullptr) {
+      startPrecompiling();
+    }
   }
 
   ~DawnContext() {
+    _stopPrecompiling.store(true);
+    if (_precompileThread.joinable()) {
+      _precompileThread.join();
+    }
+    _precompileContext = nullptr;
     backendContext.fDevice = nullptr;
     tick();
   }
