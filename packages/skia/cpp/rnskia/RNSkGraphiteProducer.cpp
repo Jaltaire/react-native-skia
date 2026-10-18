@@ -109,6 +109,7 @@ bool RNSkGraphiteProducer::applyUpdates(jsi::Runtime &runtime,
     return false;
   }
   std::lock_guard<std::mutex> lock(_mutex);
+  _schedule.valuesUpdated();
   _schedule.redrawRequested();
   kickLocked();
   return true;
@@ -121,7 +122,12 @@ bool RNSkGraphiteProducer::readUpdates(jsi::Runtime &runtime, double recorderId,
     std::lock_guard<std::mutex> lock(_mutex);
     recorder = _recorder;
   }
-  return applyUpdatesTo(recorder, runtime, recorderId, values);
+  if (!applyUpdatesTo(recorder, runtime, recorderId, values)) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(_mutex);
+  _schedule.valuesUpdated();
+  return true;
 }
 
 bool RNSkGraphiteProducer::produceInStep(bool presentsNow) {
@@ -136,12 +142,12 @@ bool RNSkGraphiteProducer::produceInStep(bool presentsNow) {
 }
 
 void RNSkGraphiteProducer::whenFrameReady(std::function<void()> callback) {
-  uint64_t generation;
+  uint64_t revision;
   {
     std::lock_guard<std::mutex> lock(_mutex);
-    generation = _schedule.awaitedGeneration();
+    revision = _schedule.awaitedRevision();
   }
-  _readyWaiters.wait(generation, std::move(callback));
+  _readyWaiters.wait(revision, std::move(callback));
 }
 
 bool RNSkGraphiteProducer::requestFrame() {
@@ -189,13 +195,13 @@ bool RNSkGraphiteProducer::produce() {
   std::shared_ptr<RNSkGraphiteTarget> target;
   std::shared_ptr<Recorder> recorder;
   sk_sp<SkPicture> picture;
-  uint64_t generation;
+  RNSkFrameStart start{};
   {
     std::lock_guard<std::mutex> lock(_mutex);
     target = _target;
     recorder = _recorder;
     picture = _picture;
-    generation = _schedule.frameBegan();
+    start = _schedule.frameBegan();
   }
   std::shared_ptr<RNSkGraphiteRecording> recording;
   if (target && (recorder || picture)) {
@@ -226,16 +232,16 @@ bool RNSkGraphiteProducer::produce() {
     RNSkLogger::logToConsole(
         "Canvas: a pipeline of the frame failed to compile.");
   }
-  const bool queued = finishFrame(target, std::move(recording), generation);
+  const bool queued = finishFrame(target, std::move(recording), start);
   if (queued) {
-    _readyWaiters.ready(generation);
+    _readyWaiters.ready(start.revision);
   }
   return queued;
 }
 
 bool RNSkGraphiteProducer::finishFrame(
     const std::shared_ptr<RNSkGraphiteTarget> &target,
-    std::shared_ptr<RNSkGraphiteRecording> recording, uint64_t generation) {
+    std::shared_ptr<RNSkGraphiteRecording> recording, RNSkFrameStart start) {
   std::lock_guard<std::mutex> lock(_mutex);
   auto outcome = RNSkFrameOutcome::kNotRecorded;
   if (recording != nullptr) {
@@ -256,7 +262,7 @@ bool RNSkGraphiteProducer::finishFrame(
   // that the next request (a surface, a resize) records it; a request that
   // landed while this job ran (binding a new target is one) starts the next
   // job now.
-  if (_schedule.frameFinished(outcome, generation)) {
+  if (_schedule.frameFinished(outcome, start)) {
     kickLocked();
   }
   return outcome == RNSkFrameOutcome::kQueued;

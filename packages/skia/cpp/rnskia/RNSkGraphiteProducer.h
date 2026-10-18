@@ -140,7 +140,7 @@ private:
   bool produce();
   bool finishFrame(const std::shared_ptr<RNSkGraphiteTarget> &target,
                    std::shared_ptr<RNSkGraphiteRecording> recording,
-                   uint64_t generation);
+                   RNSkFrameStart start);
   bool canStartFrameLocked();
   bool canStartInStepLocked(bool presentsNow);
 

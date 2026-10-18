@@ -5,6 +5,7 @@
 
 using RNSkia::RNSkFrameOutcome;
 using RNSkia::RNSkFrameSchedule;
+using RNSkia::RNSkFrameStart;
 
 namespace {
 
@@ -39,14 +40,16 @@ bool startsWithoutSurface(const RNSkFrameSchedule &schedule) {
   return schedule.canStart(true, true, withoutSurface);
 }
 
-uint64_t runFrame(RNSkFrameSchedule &schedule, RNSkFrameOutcome outcome) {
+RNSkFrameStart at(uint64_t generation) { return {generation, generation}; }
+
+RNSkFrameStart runFrame(RNSkFrameSchedule &schedule, RNSkFrameOutcome outcome) {
   schedule.frameScheduled();
-  const uint64_t generation = schedule.frameBegan();
-  schedule.frameFinished(outcome, generation);
-  return generation;
+  const auto start = schedule.frameBegan();
+  schedule.frameFinished(outcome, start);
+  return start;
 }
 
-uint64_t queueFrame(RNSkFrameSchedule &schedule) {
+RNSkFrameStart queueFrame(RNSkFrameSchedule &schedule) {
   return runFrame(schedule, RNSkFrameOutcome::kQueued);
 }
 
@@ -227,7 +230,7 @@ void testContentDuringASubmittedFrameStartsTheNextOne() {
   fillQueue(schedule);
   schedule.contentReplaced(true);
   schedule.frameScheduled();
-  const uint64_t first = schedule.frameBegan();
+  const auto first = schedule.frameBegan();
   schedule.contentReplaced(true);
   expect(!startsWithoutSurface(schedule),
          "Content replaced mid-frame is refused while the frame is in "
@@ -241,18 +244,19 @@ void testContentDuringASubmittedFrameStartsTheNextOne() {
          "Without a surface, the content that arrived mid-frame starts the "
          "next frame instead of waiting for a present that never comes.");
   schedule.frameScheduled();
-  const uint64_t second = schedule.frameBegan();
-  expect(second == first + 1, "The next frame records the newer content.");
-  expect(second == schedule.awaitedGeneration(),
+  const auto second = schedule.frameBegan();
+  expect(second.generation == first.generation + 1,
+         "The next frame records the newer content.");
+  expect(second.revision == schedule.awaitedRevision(),
          "The next frame records the content a waiter waits for.");
 }
 
 void testContentDuringASubmittedFrameStartsTheNextOneWhileThereIsRoom() {
   auto schedule = withContent();
   schedule.frameScheduled();
-  const uint64_t generation = schedule.frameBegan();
+  const auto start = schedule.frameBegan();
   schedule.contentReplaced(true);
-  expect(schedule.frameFinished(RNSkFrameOutcome::kQueued, generation),
+  expect(schedule.frameFinished(RNSkFrameOutcome::kQueued, start),
          "The submitted frame reports the content that arrived mid-frame.");
   expect(startsWithSurface(schedule),
          "With a surface and room in the queue, that content starts the next "
@@ -263,9 +267,9 @@ void testContentDuringAFrameThatFillsTheQueueWaitsForThePresent() {
   auto schedule = withContent();
   queueFrame(schedule);
   schedule.frameScheduled();
-  const uint64_t generation = schedule.frameBegan();
+  const auto start = schedule.frameBegan();
   schedule.contentReplaced(true);
-  expect(schedule.frameFinished(RNSkFrameOutcome::kQueued, generation),
+  expect(schedule.frameFinished(RNSkFrameOutcome::kQueued, start),
          "The submitted frame reports the content that arrived mid-frame.");
   expect(!startsWithSurface(schedule),
          "With a surface and a full queue, that content waits for a present.");
@@ -278,8 +282,8 @@ void testContentDuringAFrameThatFillsTheQueueWaitsForThePresent() {
 void testASubmittedFrameWithNothingNewRequestsNothing() {
   auto schedule = withContent();
   schedule.frameScheduled();
-  const uint64_t generation = schedule.frameBegan();
-  expect(!schedule.frameFinished(RNSkFrameOutcome::kQueued, generation),
+  const auto start = schedule.frameBegan();
+  expect(!schedule.frameFinished(RNSkFrameOutcome::kQueued, start),
          "A submitted frame that nothing changed during requests nothing.");
   expect(!schedule.framesPresented(1), "Its present starts nothing either.");
 }
@@ -288,9 +292,9 @@ void testARedrawDuringAFrameThatFillsTheQueueIsKept() {
   auto schedule = withContent();
   queueFrame(schedule);
   schedule.frameScheduled();
-  const uint64_t generation = schedule.frameBegan();
+  const auto start = schedule.frameBegan();
   schedule.redrawRequested();
-  expect(schedule.frameFinished(RNSkFrameOutcome::kQueued, generation),
+  expect(schedule.frameFinished(RNSkFrameOutcome::kQueued, start),
          "A redraw asked for mid-frame is reported when the frame finishes.");
   expect(!startsWithoutSurface(schedule),
          "Without a surface, that redraw still waits for a present.");
@@ -300,8 +304,8 @@ void testARedrawDuringAFrameThatFillsTheQueueIsKept() {
 void testAFrameThatRecordedNothingStaysDirty() {
   auto schedule = withContent();
   schedule.frameScheduled();
-  const uint64_t generation = schedule.frameBegan();
-  expect(!schedule.frameFinished(RNSkFrameOutcome::kNotRecorded, generation),
+  const auto start = schedule.frameBegan();
+  expect(!schedule.frameFinished(RNSkFrameOutcome::kNotRecorded, start),
          "A frame that recorded nothing, with no request during it, starts "
          "nothing.");
   expect(schedule.queued() == 0,
@@ -309,16 +313,17 @@ void testAFrameThatRecordedNothingStaysDirty() {
   expect(startsWithSurface(schedule),
          "The next request may start a frame right away.");
   schedule.frameScheduled();
-  const uint64_t retried = schedule.frameBegan();
-  expect(retried == generation, "The retried frame records the same content.");
+  const auto retried = schedule.frameBegan();
+  expect(retried.generation == start.generation,
+         "The retried frame records the same content.");
 }
 
 void testAFrameThatRecordedNothingReportsARequestDuringIt() {
   auto schedule = withContent();
   schedule.frameScheduled();
-  const uint64_t generation = schedule.frameBegan();
+  const auto start = schedule.frameBegan();
   schedule.redrawRequested();
-  expect(schedule.frameFinished(RNSkFrameOutcome::kNotRecorded, generation),
+  expect(schedule.frameFinished(RNSkFrameOutcome::kNotRecorded, start),
          "A request during a frame that recorded nothing starts the next "
          "frame.");
 }
@@ -327,11 +332,11 @@ void testAFrameOnARetiredTargetIsNotQueued() {
   auto schedule = withContent();
   queueFrame(schedule);
   schedule.frameScheduled();
-  const uint64_t generation = schedule.frameBegan();
+  const auto start = schedule.frameBegan();
   schedule.targetReplaced();
-  expect(schedule.frameFinished(RNSkFrameOutcome::kQueuedOnRetiredTarget,
-                                generation),
-         "The new target asked for a frame while the old one was recorded.");
+  expect(
+      schedule.frameFinished(RNSkFrameOutcome::kQueuedOnRetiredTarget, start),
+      "The new target asked for a frame while the old one was recorded.");
   expect(schedule.queued() == 0,
          "A frame queued on a retired target is not waited for.");
   expect(schedule.framesPresented(0),
@@ -409,25 +414,72 @@ void testSubmittedGenerationNeverGoesBack() {
   queueFrame(schedule);
   schedule.frameScheduled();
   schedule.frameBegan();
-  schedule.frameFinished(RNSkFrameOutcome::kQueued, 2);
+  schedule.frameFinished(RNSkFrameOutcome::kQueued, at(2));
   schedule.framesPresented(1);
   schedule.frameScheduled();
   schedule.frameBegan();
-  schedule.frameFinished(RNSkFrameOutcome::kQueued, 1);
+  schedule.frameFinished(RNSkFrameOutcome::kQueued, at(1));
   expect(schedule.queued() == kMaxQueued, "The queue is full.");
   expect(!startsWithoutSurface(schedule),
          "An older frame finishing late does not make the newer content "
          "look unsubmitted.");
 }
 
-void testAwaitedGeneration() {
+void testAwaitedRevision() {
   RNSkFrameSchedule schedule;
-  expect(schedule.awaitedGeneration() == 1,
+  expect(schedule.awaitedRevision() == 1,
          "A view that never had content waits for its first.");
   schedule.contentReplaced(true);
   schedule.contentReplaced(true);
-  expect(schedule.awaitedGeneration() == 2,
+  expect(schedule.awaitedRevision() == 2,
          "A waiter waits for the newest content.");
+}
+
+void testValuesUpdatedAdvanceTheAwaitedRevision() {
+  auto schedule = withContent();
+  schedule.valuesUpdated();
+  expect(schedule.awaitedRevision() == 2,
+         "A waiter after an animated value update waits for a frame that "
+         "draws the new values.");
+  schedule.frameScheduled();
+  const auto start = schedule.frameBegan();
+  expect(start.revision == 2,
+         "A frame records the revision of the values it replays.");
+  expect(start.generation == 1,
+         "An animated value update keeps the content's generation.");
+}
+
+void testContentReplacedAdvancesTheRevision() {
+  auto schedule = withContent();
+  schedule.valuesUpdated();
+  schedule.contentReplaced(true);
+  schedule.frameScheduled();
+  const auto start = schedule.frameBegan();
+  expect(start.generation == 2 && start.revision == 3,
+         "New content advances both the generation and the revision.");
+}
+
+void testValuesUpdatedDuringAFrameAreNotCoveredByIt() {
+  auto schedule = withContent();
+  schedule.frameScheduled();
+  const auto start = schedule.frameBegan();
+  schedule.valuesUpdated();
+  schedule.redrawRequested();
+  expect(start.revision < schedule.awaitedRevision(),
+         "A frame that began before a value update does not satisfy a waiter "
+         "for it.");
+  expect(schedule.frameFinished(RNSkFrameOutcome::kQueued, start),
+         "The update made during the frame asks for the next one.");
+}
+
+void testValuesUpdatedDoNotQueueFramesBehindAFullQueueWithoutASurface() {
+  auto schedule = withContent();
+  fillQueue(schedule);
+  schedule.valuesUpdated();
+  schedule.redrawRequested();
+  expect(!startsWithoutSurface(schedule),
+         "Without a surface, an animated value update waits for a present "
+         "instead of queueing behind the full queue.");
 }
 
 } // namespace
@@ -461,7 +513,11 @@ int main() {
   testTheQueueStaysBoundedWithASurface();
   testClearedContentIsNotDirty();
   testSubmittedGenerationNeverGoesBack();
-  testAwaitedGeneration();
+  testAwaitedRevision();
+  testValuesUpdatedAdvanceTheAwaitedRevision();
+  testContentReplacedAdvancesTheRevision();
+  testValuesUpdatedDuringAFrameAreNotCoveredByIt();
+  testValuesUpdatedDoNotQueueFramesBehindAFullQueueWithoutASurface();
   if (failures > 0) {
     std::fprintf(stderr, "%d failure(s)\n", failures);
     return EXIT_FAILURE;

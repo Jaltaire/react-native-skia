@@ -7,6 +7,16 @@
 
 namespace RNSkia {
 
+/**
+ What a frame records: the content it replays (its generation) and the
+ revision of the view at that point, which also counts animated value
+ updates.
+ */
+struct RNSkFrameStart {
+  uint64_t generation;
+  uint64_t revision;
+};
+
 enum class RNSkFrameOutcome {
   kQueued,
   kQueuedOnRetiredTarget,
@@ -65,8 +75,17 @@ public:
    */
   void contentReplaced(bool dirty) {
     _generation++;
+    _revision++;
     _dirty = dirty;
   }
+
+  /**
+   Animated values of the current content changed: a frame recorded from now
+   on draws them. The content itself stays the same generation, so that a view
+   without a surface still queues one frame per React commit rather than one
+   per animation step.
+   */
+  void valuesUpdated() { _revision++; }
 
   /**
    A redraw of the current content was asked for.
@@ -90,11 +109,11 @@ public:
 
   /**
    The scheduled frame took its snapshot of the content. Returns the
-   generation it records.
+   generation and the revision it records.
    */
-  uint64_t frameBegan() {
+  RNSkFrameStart frameBegan() {
     _dirty = false;
-    return _generation;
+    return {_generation, _revision};
   }
 
   /**
@@ -105,13 +124,13 @@ public:
    refused while the frame was in flight, so the owner starts the next frame
    now if the gate allows it.
    */
-  bool frameFinished(RNSkFrameOutcome outcome, uint64_t generation) {
+  bool frameFinished(RNSkFrameOutcome outcome, RNSkFrameStart start) {
     _inFlight = false;
     const bool requested = _dirty;
     switch (outcome) {
     case RNSkFrameOutcome::kQueued:
       _queued++;
-      _submittedGeneration = std::max(_submittedGeneration, generation);
+      _submittedGeneration = std::max(_submittedGeneration, start.generation);
       break;
     case RNSkFrameOutcome::kQueuedOnRetiredTarget:
     case RNSkFrameOutcome::kNotRecorded:
@@ -134,12 +153,11 @@ public:
   }
 
   /**
-   The generation a caller waiting for the current content waits for. A view
-   that never had content waits for its first.
+   The revision a caller waiting for what the view shows now waits for: the
+   current content with its animated values as they are. A view that never
+   had content waits for its first.
    */
-  uint64_t awaitedGeneration() const {
-    return std::max<uint64_t>(_generation, 1);
-  }
+  uint64_t awaitedRevision() const { return std::max<uint64_t>(_revision, 1); }
 
   size_t queued() const { return _queued; }
 
@@ -151,6 +169,7 @@ private:
   size_t _queued = 0;
   uint64_t _generation = 0;
   uint64_t _submittedGeneration = 0;
+  uint64_t _revision = 0;
 };
 
 } // namespace RNSkia
