@@ -98,11 +98,15 @@ public:
   /**
    The view was bound to another target. The frames queued on the previous
    one are not coming through this view anymore: none is waited for, and the
-   content is recorded again for the new target.
+   content is recorded again for the new target, as a new revision, so that
+   a caller waiting from now on waits for a frame on the new target rather
+   than one the previous target already had (see
+   RNSkFrameReadyWaiters::targetReplaced).
    */
   void targetReplaced() {
     _queued = 0;
     _dirty = true;
+    _revision++;
   }
 
   /**

@@ -1,9 +1,11 @@
 #include "RNSkFrameSchedule.h"
+#include "RNSkFrameReadyWaiters.h"
 
 #include <cstdio>
 #include <cstdlib>
 
 using RNSkia::RNSkFrameOutcome;
+using RNSkia::RNSkFrameReadyWaiters;
 using RNSkia::RNSkFrameSchedule;
 using RNSkia::RNSkFrameStart;
 
@@ -569,6 +571,97 @@ void testSubmittedRevisionNeverGoesBack() {
          "undrawn.");
 }
 
+void testTargetReplacedAdvancesTheAwaitedRevision() {
+  auto schedule = withContent();
+  const auto start = queueFrame(schedule);
+  expect(!schedule.waitRequested(schedule.awaitedRevision()),
+         "The frame on the first target covers a wait.");
+  schedule.targetReplaced();
+  expect(schedule.awaitedRevision() > start.revision,
+         "A wait after the replacement is for a newer revision than any "
+         "frame of the previous target.");
+  expect(schedule.waitRequested(schedule.awaitedRevision()),
+         "No frame on the new target covers it yet.");
+  const auto replacement = queueFrame(schedule);
+  expect(replacement.revision == schedule.awaitedRevision(),
+         "The frame recorded for the new target records that revision.");
+  expect(!schedule.waitRequested(schedule.awaitedRevision()),
+         "The frame on the new target covers the wait.");
+}
+
+/**
+ The readiness side of RNSkGraphiteProducer: its schedule and its waiters,
+ driven in the order the producer drives them. setTarget replaces the
+ target of both under the producer's lock, a frame reads the epoch under
+ that lock when it finishes, and reports its readiness after the lock is
+ released.
+ */
+struct ReadinessBench {
+  RNSkFrameSchedule schedule;
+  RNSkFrameReadyWaiters waiters;
+
+  ReadinessBench() { schedule.contentReplaced(true); }
+
+  void whenFrameReady(int &calls) {
+    const uint64_t revision = schedule.awaitedRevision();
+    waiters.wait(revision, [&calls]() { calls++; });
+    schedule.waitRequested(revision);
+  }
+
+  void setTarget() {
+    schedule.targetReplaced();
+    waiters.targetReplaced();
+  }
+
+  RNSkFrameStart beginFrame() {
+    schedule.frameScheduled();
+    return schedule.frameBegan();
+  }
+
+  uint64_t finishFrame(RNSkFrameStart start) {
+    schedule.frameFinished(RNSkFrameOutcome::kQueued, start);
+    return waiters.epoch();
+  }
+
+  void runFrame() {
+    const auto start = beginFrame();
+    waiters.ready(start.revision, finishFrame(start));
+  }
+};
+
+void testAWaitAfterATargetReplacementWaitsForTheNewTarget() {
+  ReadinessBench bench;
+  bench.runFrame();
+  int calls = 0;
+  bench.whenFrameReady(calls);
+  expect(calls == 1, "A frame ready on the first target resolves a wait.");
+  bench.setTarget();
+  bench.whenFrameReady(calls);
+  expect(calls == 1, "After the replacement, the frame the previous target "
+                     "had does not resolve a wait.");
+  bench.runFrame();
+  expect(calls == 2, "The frame recorded for the new target resolves it.");
+}
+
+void testAReplacementBetweenAFrameAndItsReadinessResolvesNoWait() {
+  ReadinessBench bench;
+  int before = 0;
+  bench.whenFrameReady(before);
+  const auto start = bench.beginFrame();
+  const uint64_t epoch = bench.finishFrame(start);
+  bench.setTarget();
+  int after = 0;
+  bench.whenFrameReady(after);
+  bench.waiters.ready(start.revision, epoch);
+  expect(before == 0,
+         "A frame whose target was replaced before its readiness was "
+         "reported does not resolve a wait made before the replacement.");
+  expect(after == 0, "Nor one made after it.");
+  bench.runFrame();
+  expect(before == 1 && after == 1,
+         "The frame recorded for the new target resolves both.");
+}
+
 } // namespace
 
 int main() {
@@ -612,6 +705,9 @@ int main() {
   testOnlyTheWaitedFrameQueuesWithoutASurface();
   testAWaitDoesNotCountAFrameOnARetiredTarget();
   testSubmittedRevisionNeverGoesBack();
+  testTargetReplacedAdvancesTheAwaitedRevision();
+  testAWaitAfterATargetReplacementWaitsForTheNewTarget();
+  testAReplacementBetweenAFrameAndItsReadinessResolvesNoWait();
   if (failures > 0) {
     std::fprintf(stderr, "%d failure(s)\n", failures);
     return EXIT_FAILURE;

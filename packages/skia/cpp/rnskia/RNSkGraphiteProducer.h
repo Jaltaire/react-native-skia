@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 #include <jsi/jsi.h>
 
@@ -139,9 +140,18 @@ private:
                       sk_sp<SkPicture> picture, bool dirty);
   void kickLocked();
   bool produce();
-  bool finishFrame(const std::shared_ptr<RNSkGraphiteTarget> &target,
-                   std::shared_ptr<RNSkGraphiteRecording> recording,
-                   RNSkFrameStart start);
+  /**
+   Queues the recording on the target it was recorded for and settles the
+   frame. Returns the target epoch of the waiters (see
+   RNSkFrameReadyWaiters::epoch) when the frame was queued on the current
+   target, read under the same lock as a replacement of the target, so that
+   a frame whose target is replaced before its readiness is reported
+   resolves no wait.
+   */
+  std::optional<uint64_t>
+  finishFrame(const std::shared_ptr<RNSkGraphiteTarget> &target,
+              std::shared_ptr<RNSkGraphiteRecording> recording,
+              RNSkFrameStart start);
   bool canStartFrameLocked();
   bool canStartInStepLocked(bool presentsNow);
 

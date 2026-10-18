@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "RNSkGraphiteTarget.h"
@@ -43,6 +44,7 @@ void RNSkGraphiteProducer::setTarget(
     // A frame still queued on the previous target is not coming through this
     // view anymore (the view unbound itself from it): do not wait for it.
     _schedule.targetReplaced();
+    _readyWaiters.targetReplaced();
     kickLocked();
   }
 }
@@ -236,14 +238,15 @@ bool RNSkGraphiteProducer::produce() {
     RNSkLogger::logToConsole(
         "Canvas: a pipeline of the frame failed to compile.");
   }
-  const bool queued = finishFrame(target, std::move(recording), start);
-  if (queued) {
-    _readyWaiters.ready(start.revision);
+  const auto epoch = finishFrame(target, std::move(recording), start);
+  if (!epoch.has_value()) {
+    return false;
   }
-  return queued;
+  _readyWaiters.ready(start.revision, *epoch);
+  return true;
 }
 
-bool RNSkGraphiteProducer::finishFrame(
+std::optional<uint64_t> RNSkGraphiteProducer::finishFrame(
     const std::shared_ptr<RNSkGraphiteTarget> &target,
     std::shared_ptr<RNSkGraphiteRecording> recording, RNSkFrameStart start) {
   std::lock_guard<std::mutex> lock(_mutex);
@@ -269,7 +272,10 @@ bool RNSkGraphiteProducer::finishFrame(
   if (_schedule.frameFinished(outcome, start)) {
     kickLocked();
   }
-  return outcome == RNSkFrameOutcome::kQueued;
+  if (outcome != RNSkFrameOutcome::kQueued) {
+    return std::nullopt;
+  }
+  return _readyWaiters.epoch();
 }
 
 void RNSkGraphiteProducer::renderInto(SkCanvas *canvas, float pixelDensity) {
