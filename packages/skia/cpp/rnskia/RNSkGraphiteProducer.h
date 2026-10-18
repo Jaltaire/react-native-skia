@@ -8,6 +8,7 @@
 #include <jsi/jsi.h>
 
 #include "RNSkFrameReadyWaiters.h"
+#include "RNSkFrameSchedule.h"
 #include "include/core/SkRefCnt.h"
 
 class SkCanvas;
@@ -43,7 +44,9 @@ class RNSkGraphiteTarget;
  * meanwhile only mark the content dirty; the next job (started by the update,
  * by the end of the job before, or by a presented frame) picks them up. A
  * producer that outruns the display therefore records once per vsync, and
- * the queue of the target never grows. On a Vulkan window the present alone
+ * the queue of the target never grows while the view can present; a view
+ * without a surface queues one more frame per React commit (see
+ * RNSkFrameSchedule::canStart). On a Vulkan window the present alone
  * takes two to three milliseconds of the main thread, so a replay that only
  * started once the frame was on screen missed every other vsync at 120 Hz.
  */
@@ -136,20 +139,21 @@ private:
   void kickLocked();
   bool produce();
   bool finishFrame(const std::shared_ptr<RNSkGraphiteTarget> &target,
-                   std::shared_ptr<RNSkGraphiteRecording> recording);
+                   std::shared_ptr<RNSkGraphiteRecording> recording,
+                   uint64_t generation);
+  bool canStartFrameLocked();
+  bool canStartInStepLocked(bool presentsNow);
 
   // Content and scheduling state.
   std::mutex _mutex;
   std::shared_ptr<RNSkGraphiteTarget> _target;
   std::shared_ptr<Recorder> _recorder;
   sk_sp<SkPicture> _picture;
-  // Recordings submitted to the current target and not presented yet. A job
-  // starts while there is room for its recording in the queue.
-  static constexpr size_t kMaxQueued = 2;
-  bool _dirty = false;
-  bool _inFlight = false;
-  size_t _queued = 0;
-  uint64_t _generation = 0;
+  // Which content is the newest, the job in flight and the recordings
+  // submitted to the current target and not presented yet. A job starts
+  // while there is room for its recording in the queue (see
+  // RNSkFrameSchedule::canStart).
+  RNSkFrameSchedule _schedule;
   RNSkFrameReadyWaiters _readyWaiters;
 };
 

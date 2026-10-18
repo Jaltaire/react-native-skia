@@ -294,6 +294,18 @@ public:
     return !_queue.empty();
   }
 
+  /** Whether the view has a surface to present to. */
+  bool canPresent() {
+    std::shared_ptr<RNSkWindowSurface> surface;
+    {
+      std::lock_guard<std::mutex> lock(_stateMutex);
+      surface = _surface.lock();
+    }
+    RNSkGraphiteTargetInfo info;
+    return surface && surface->getTargetInfo(&info) &&
+           !DawnContext::isDeviceLost();
+  }
+
 private:
   /**
    The target to record against: the view's surface when it has one, else

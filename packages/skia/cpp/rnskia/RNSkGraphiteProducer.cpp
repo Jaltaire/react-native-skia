@@ -42,8 +42,7 @@ void RNSkGraphiteProducer::setTarget(
     retiredTarget = std::exchange(_target, std::move(target));
     // A frame still queued on the previous target is not coming through this
     // view anymore (the view unbound itself from it): do not wait for it.
-    _queued = 0;
-    _dirty = true;
+    _schedule.targetReplaced();
     kickLocked();
   }
 }
@@ -70,8 +69,7 @@ void RNSkGraphiteProducer::replaceContent(std::shared_ptr<Recorder> recorder,
     std::lock_guard<std::mutex> lock(_mutex);
     retiredRecorder = std::exchange(_recorder, std::move(recorder));
     retiredPicture = std::exchange(_picture, std::move(picture));
-    _generation++;
-    _dirty = dirty;
+    _schedule.contentReplaced(dirty);
     if (dirty) {
       kickLocked();
     }
@@ -111,7 +109,7 @@ bool RNSkGraphiteProducer::applyUpdates(jsi::Runtime &runtime,
     return false;
   }
   std::lock_guard<std::mutex> lock(_mutex);
-  _dirty = true;
+  _schedule.redrawRequested();
   kickLocked();
   return true;
 }
@@ -129,12 +127,10 @@ bool RNSkGraphiteProducer::readUpdates(jsi::Runtime &runtime, double recorderId,
 bool RNSkGraphiteProducer::produceInStep(bool presentsNow) {
   {
     std::lock_guard<std::mutex> lock(_mutex);
-    const size_t room = presentsNow ? kMaxQueued + 1 : kMaxQueued;
-    if (_inFlight || _queued >= room || _target == nullptr ||
-        (_recorder == nullptr && _picture == nullptr)) {
+    if (!canStartInStepLocked(presentsNow)) {
       return false;
     }
-    _inFlight = true;
+    _schedule.frameScheduled();
   }
   return produce();
 }
@@ -143,34 +139,44 @@ void RNSkGraphiteProducer::whenFrameReady(std::function<void()> callback) {
   uint64_t generation;
   {
     std::lock_guard<std::mutex> lock(_mutex);
-    generation = std::max<uint64_t>(_generation, 1);
+    generation = _schedule.awaitedGeneration();
   }
   _readyWaiters.wait(generation, std::move(callback));
 }
 
 bool RNSkGraphiteProducer::requestFrame() {
   std::lock_guard<std::mutex> lock(_mutex);
-  _dirty = true;
+  _schedule.redrawRequested();
   kickLocked();
   return _target != nullptr && (_recorder != nullptr || _picture != nullptr);
 }
 
 void RNSkGraphiteProducer::onFramePresented(size_t presented) {
   std::lock_guard<std::mutex> lock(_mutex);
-  // The view may present recordings that are not this producer's (a client
-  // recording, the last frame shown again), hence the clamp.
-  _queued = presented >= _queued ? 0 : _queued - presented;
-  if (_dirty) {
+  if (_schedule.framesPresented(presented)) {
     kickLocked();
   }
 }
 
+bool RNSkGraphiteProducer::canStartFrameLocked() {
+  const auto target = _target;
+  return _schedule.canStart(target != nullptr,
+                            _recorder != nullptr || _picture != nullptr,
+                            [&target]() { return target->canPresent(); });
+}
+
+bool RNSkGraphiteProducer::canStartInStepLocked(bool presentsNow) {
+  const auto target = _target;
+  return _schedule.canStartInStep(
+      target != nullptr, _recorder != nullptr || _picture != nullptr,
+      presentsNow, [&target]() { return target->canPresent(); });
+}
+
 void RNSkGraphiteProducer::kickLocked() {
-  if (_inFlight || _queued >= kMaxQueued || _target == nullptr ||
-      (_recorder == nullptr && _picture == nullptr)) {
+  if (!canStartFrameLocked()) {
     return;
   }
-  _inFlight = true;
+  _schedule.frameScheduled();
   std::weak_ptr<RNSkGraphiteProducer> weakThis = weak_from_this();
   RNSkThreadPool::getInstance().post([weakThis]() {
     if (auto self = weakThis.lock()) {
@@ -189,8 +195,7 @@ bool RNSkGraphiteProducer::produce() {
     target = _target;
     recorder = _recorder;
     picture = _picture;
-    generation = _generation;
-    _dirty = false;
+    generation = _schedule.frameBegan();
   }
   std::shared_ptr<RNSkGraphiteRecording> recording;
   if (target && (recorder || picture)) {
@@ -221,7 +226,7 @@ bool RNSkGraphiteProducer::produce() {
     RNSkLogger::logToConsole(
         "Canvas: a pipeline of the frame failed to compile.");
   }
-  const bool queued = finishFrame(target, std::move(recording));
+  const bool queued = finishFrame(target, std::move(recording), generation);
   if (queued) {
     _readyWaiters.ready(generation);
   }
@@ -230,37 +235,31 @@ bool RNSkGraphiteProducer::produce() {
 
 bool RNSkGraphiteProducer::finishFrame(
     const std::shared_ptr<RNSkGraphiteTarget> &target,
-    std::shared_ptr<RNSkGraphiteRecording> recording) {
+    std::shared_ptr<RNSkGraphiteRecording> recording, uint64_t generation) {
   std::lock_guard<std::mutex> lock(_mutex);
-  _inFlight = false;
+  auto outcome = RNSkFrameOutcome::kNotRecorded;
   if (recording != nullptr) {
     // Queued even if the view was bound to another target while this job
     // ran: a target never drops a recording, a later one on the same
     // recorder may depend on resources this one uploads. Submitted under the
     // lock: a frame presented in between (a redraw replaying the last one)
-    // would otherwise clear the flag before the recording is even queued.
+    // would otherwise free a queue slot before the recording is even queued.
     target->submit(std::move(recording));
-    if (target == _target) {
-      _queued++;
-      // Values that arrived during the replay start the next job right away,
-      // while this frame waits for its vsync, as long as there is room.
-      if (_dirty) {
-        kickLocked();
-      }
-      return true;
-    }
-    // The frame went to the previous target; the new one has none yet.
+    // A frame that went to the previous target leaves the new one with none
+    // yet.
+    outcome = target == _target ? RNSkFrameOutcome::kQueued
+                                : RNSkFrameOutcome::kQueuedOnRetiredTarget;
   }
-  // Nothing was recorded for the current target: keep the content dirty so
-  // that the next request (a surface, a resize) records it. A request that
-  // landed while this job ran (binding a new target is one) was only noted
-  // as dirty; it starts the next job now.
-  const bool requested = _dirty;
-  _dirty = true;
-  if (requested) {
+  // Values that arrived during the replay start the next job right away,
+  // while this frame waits for its vsync, as long as the gate allows it. A
+  // frame that did not reach the current target keeps the content dirty so
+  // that the next request (a surface, a resize) records it; a request that
+  // landed while this job ran (binding a new target is one) starts the next
+  // job now.
+  if (_schedule.frameFinished(outcome, generation)) {
     kickLocked();
   }
-  return false;
+  return outcome == RNSkFrameOutcome::kQueued;
 }
 
 void RNSkGraphiteProducer::renderInto(SkCanvas *canvas, float pixelDensity) {
