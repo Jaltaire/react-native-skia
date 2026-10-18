@@ -109,8 +109,9 @@ public:
   bool requestFrame();
 
   /**
-   The view presented `presented` recordings (every one it had taken from the
-   queue): as many slots free up for the next jobs.
+   The view is done with `presented` recordings it had taken from the queue
+   (presented, or skipped as unpresentable), also when the window declined
+   the ones behind them: as many slots free up for the next jobs.
    */
   void onFramePresented(size_t presented);
 

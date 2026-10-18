@@ -211,7 +211,6 @@ public:
       recordings.push_back(std::move(lastPresented));
     }
     if (presentOrKeep(*target, targetInfo, recordings)) {
-      _producer->onFramePresented(recordings.size());
       return;
     }
     // Not scheduleFrame(): without a scheduler it redraws, which would fail
@@ -309,7 +308,6 @@ public:
       return true;
     }
     _presentedFrames++;
-    _producer->onFramePresented(recordings.size());
     return target->hasQueued();
   }
 
@@ -418,18 +416,25 @@ private:
    Presents the recordings onto the window and remembers the last one shown.
    Returns whether all of them went through; the one the window could not
    take and the ones behind it go back to the front of the target's queue.
+   The producer is told how many are done, also when the window declined one
+   behind them (a batch of recordings of two sizes after a resize, whose
+   second needs a drawable of its own): each frees a slot of its queue, and
+   a slot left taken by a recording that is gone would stop the producer
+   once two of them add up, with nothing queued to present.
    */
   bool presentOrKeep(
       RNSkGraphiteTarget &target, const RNSkGraphiteTargetInfo &targetInfo,
       const std::vector<std::shared_ptr<RNSkGraphiteRecording>> &recordings) {
     const size_t done =
         present(*_surface, targetInfo, recordings, /* remember= */ true);
-    if (done == recordings.size()) {
-      return true;
+    if (done < recordings.size()) {
+      target.requeue(std::vector<std::shared_ptr<RNSkGraphiteRecording>>(
+          recordings.begin() + done, recordings.end()));
     }
-    target.requeue(std::vector<std::shared_ptr<RNSkGraphiteRecording>>(
-        recordings.begin() + done, recordings.end()));
-    return false;
+    if (done > 0) {
+      _producer->onFramePresented(done);
+    }
+    return done == recordings.size();
   }
 
   /**
