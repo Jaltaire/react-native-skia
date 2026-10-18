@@ -145,11 +145,13 @@ public:
   }
 
   /**
-   The view presented `presented` recordings, every one it had taken from
-   the queue: as many frames are on screen. The view may present recordings
-   that are not this producer's (a client recording, the last frame shown
-   again), hence the clamp. Returns whether the content is dirty and the
-   next frame should start.
+   The view is done with `presented` recordings it had taken from the queue
+   (presented, or skipped as unpresentable), also when the window declined
+   the ones behind them: those are queued again and still hold their slots
+   (see settlePresentedBatch). The view may present recordings that are not
+   this producer's (a client recording, the last frame shown again), hence
+   the clamp. Returns whether the content is dirty and the next frame should
+   start.
    */
   bool framesPresented(size_t presented) {
     _queued = presented >= _queued ? 0 : _queued - presented;

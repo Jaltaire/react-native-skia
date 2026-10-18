@@ -23,6 +23,7 @@
 #include "RNSkGraphiteTargetInfo.h"
 #include "RNSkOffscreenSurface.h"
 #include "RNSkPlatformContext.h"
+#include "RNSkPresentedBatch.h"
 #include "RNSkSurface.h"
 #include "RNSkWindowSurface.h"
 #include "jsi/ViewProperty.h"
@@ -418,23 +419,16 @@ private:
    take and the ones behind it go back to the front of the target's queue.
    The producer is told how many are done, also when the window declined one
    behind them (a batch of recordings of two sizes after a resize, whose
-   second needs a drawable of its own): each frees a slot of its queue, and
-   a slot left taken by a recording that is gone would stop the producer
-   once two of them add up, with nothing queued to present.
+   second needs a drawable of its own); see settlePresentedBatch.
    */
   bool presentOrKeep(
       RNSkGraphiteTarget &target, const RNSkGraphiteTargetInfo &targetInfo,
       const std::vector<std::shared_ptr<RNSkGraphiteRecording>> &recordings) {
-    const size_t done =
-        present(*_surface, targetInfo, recordings, /* remember= */ true);
-    if (done < recordings.size()) {
-      target.requeue(std::vector<std::shared_ptr<RNSkGraphiteRecording>>(
-          recordings.begin() + done, recordings.end()));
-    }
-    if (done > 0) {
-      _producer->onFramePresented(done);
-    }
-    return done == recordings.size();
+    return settlePresentedBatch(
+        recordings,
+        present(*_surface, targetInfo, recordings, /* remember= */ true),
+        [&target](const auto &kept) { target.requeue(kept); },
+        [this](size_t done) { _producer->onFramePresented(done); });
   }
 
   /**

@@ -27,4 +27,9 @@ for SANITIZER in address,undefined thread; do
     "$ROOT/packages/skia/cpp-tests/RNSkFrameScheduleTest.cpp" \
     -o "$OUT/RNSkFrameScheduleTest"
   "$OUT/RNSkFrameScheduleTest"
+  /usr/bin/clang++ -std=c++20 -O1 -g -fsanitize="$SANITIZER" \
+    -I"$CPP/rnskia" \
+    "$ROOT/packages/skia/cpp-tests/RNSkPresentedBatchTest.cpp" \
+    -o "$OUT/RNSkPresentedBatchTest"
+  "$OUT/RNSkPresentedBatchTest"
 done
