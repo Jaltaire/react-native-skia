@@ -148,6 +148,10 @@ void RNSkGraphiteProducer::whenFrameReady(std::function<void()> callback) {
     revision = _schedule.awaitedRevision();
   }
   _readyWaiters.wait(revision, std::move(callback));
+  std::lock_guard<std::mutex> lock(_mutex);
+  if (_schedule.waitRequested(revision)) {
+    kickLocked();
+  }
 }
 
 bool RNSkGraphiteProducer::requestFrame() {

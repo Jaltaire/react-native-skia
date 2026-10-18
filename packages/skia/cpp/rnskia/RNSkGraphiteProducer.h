@@ -45,7 +45,7 @@ class RNSkGraphiteTarget;
  * by the end of the job before, or by a presented frame) picks them up. A
  * producer that outruns the display therefore records once per vsync, and
  * the queue of the target never grows while the view can present; a view
- * without a surface queues one more frame per React commit (see
+ * without a surface queues one more frame per React commit or wait (see
  * RNSkFrameSchedule::canStart). On a Vulkan window the present alone
  * takes two to three milliseconds of the main thread, so a replay that only
  * started once the frame was on screen missed every other vsync at 120 Hz.

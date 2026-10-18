@@ -39,8 +39,9 @@ public:
    presented at a time, so that recording keeps pace with the display. A
    view that cannot present (it has no surface) presents nothing, though:
    there, newer content does not wait for the unpresented frames and queues
-   behind them, while redraws of the same content still wait, so that the
-   queue only grows by one frame per React commit.
+   behind them, and so do animated values a caller waits for, while other
+   redraws of the same content still wait, so that the queue only grows by
+   one frame per React commit or wait.
    */
   bool canStart(bool hasTarget, bool hasContent,
                 const std::function<bool()> &canPresent) const {
@@ -50,7 +51,9 @@ public:
     if (_queued < kMaxQueued) {
       return true;
     }
-    return _generation > _submittedGeneration && !canPresent();
+    const bool newer = _generation > _submittedGeneration ||
+                       _waitedRevision > _submittedRevision;
+    return newer && !canPresent();
   }
 
   /**
@@ -131,6 +134,7 @@ public:
     case RNSkFrameOutcome::kQueued:
       _queued++;
       _submittedGeneration = std::max(_submittedGeneration, start.generation);
+      _submittedRevision = std::max(_submittedRevision, start.revision);
       break;
     case RNSkFrameOutcome::kQueuedOnRetiredTarget:
     case RNSkFrameOutcome::kNotRecorded:
@@ -159,6 +163,16 @@ public:
    */
   uint64_t awaitedRevision() const { return std::max<uint64_t>(_revision, 1); }
 
+  /**
+   A caller waits for a frame of the revision. Returns whether no submitted
+   frame covers it yet, in which case the owner starts one if the gate
+   allows it: the wait lets a view without a surface queue that frame.
+   */
+  bool waitRequested(uint64_t revision) {
+    _waitedRevision = std::max(_waitedRevision, revision);
+    return revision > _submittedRevision;
+  }
+
   size_t queued() const { return _queued; }
 
   bool isDirty() const { return _dirty; }
@@ -170,6 +184,8 @@ private:
   uint64_t _generation = 0;
   uint64_t _submittedGeneration = 0;
   uint64_t _revision = 0;
+  uint64_t _submittedRevision = 0;
+  uint64_t _waitedRevision = 0;
 };
 
 } // namespace RNSkia

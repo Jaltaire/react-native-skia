@@ -482,6 +482,93 @@ void testValuesUpdatedDoNotQueueFramesBehindAFullQueueWithoutASurface() {
          "instead of queueing behind the full queue.");
 }
 
+void testAWaitForNewerValuesQueuesAFrameWithoutASurface() {
+  auto schedule = withContent();
+  fillQueue(schedule);
+  schedule.valuesUpdated();
+  schedule.redrawRequested();
+  expect(schedule.waitRequested(schedule.awaitedRevision()),
+         "A wait for values no submitted frame has drawn asks for a frame.");
+  expect(startsWithoutSurface(schedule),
+         "Without a surface, a frame a caller waits for queues behind the "
+         "full queue rather than waiting for a present that never comes.");
+}
+
+void testAWaitForNewerValuesStillWaitsForThePresentWithASurface() {
+  auto schedule = withContent();
+  fillQueue(schedule);
+  schedule.valuesUpdated();
+  schedule.waitRequested(schedule.awaitedRevision());
+  expect(!startsWithSurface(schedule),
+         "With a surface, the waited-for frame follows a present as usual.");
+}
+
+void testAWaitForNewerValuesStartsAFrameWhileTheQueueHasRoom() {
+  auto schedule = withContent();
+  queueFrame(schedule);
+  schedule.valuesUpdated();
+  expect(schedule.waitRequested(schedule.awaitedRevision()),
+         "A wait for values no submitted frame has drawn asks for a frame.");
+  expect(startsWithSurface(schedule),
+         "With room in the queue, that frame starts at once.");
+}
+
+void testAWaitForDrawnValuesAsksForNothing() {
+  auto schedule = withContent();
+  schedule.valuesUpdated();
+  fillQueue(schedule);
+  expect(!schedule.waitRequested(schedule.awaitedRevision()),
+         "A wait for values a submitted frame already drew needs no frame.");
+  expect(!startsWithoutSurface(schedule),
+         "Without a surface, a covered wait does not queue another frame.");
+}
+
+void testOnlyTheWaitedFrameQueuesWithoutASurface() {
+  auto schedule = withContent();
+  fillQueue(schedule);
+  schedule.valuesUpdated();
+  schedule.waitRequested(schedule.awaitedRevision());
+  queueFrame(schedule);
+  expect(schedule.queued() == kMaxQueued + 1,
+         "The waited-for frame queues behind the full queue.");
+  schedule.valuesUpdated();
+  schedule.redrawRequested();
+  expect(!startsWithoutSurface(schedule),
+         "Once the waited-for frame is queued, later animation steps wait "
+         "for a present again.");
+}
+
+void testAWaitDoesNotCountAFrameOnARetiredTarget() {
+  auto schedule = withContent();
+  fillQueue(schedule);
+  schedule.valuesUpdated();
+  const uint64_t revision = schedule.awaitedRevision();
+  schedule.waitRequested(revision);
+  runFrame(schedule, RNSkFrameOutcome::kQueuedOnRetiredTarget);
+  expect(schedule.waitRequested(revision),
+         "A frame that went to a retired target does not cover the wait.");
+  expect(startsWithoutSurface(schedule),
+         "Without a surface, the waited-for frame still queues on the "
+         "current target.");
+}
+
+void testSubmittedRevisionNeverGoesBack() {
+  auto schedule = withContent();
+  schedule.valuesUpdated();
+  schedule.valuesUpdated();
+  queueFrame(schedule);
+  schedule.frameScheduled();
+  schedule.frameBegan();
+  schedule.frameFinished(RNSkFrameOutcome::kQueued, {1, 3});
+  schedule.framesPresented(1);
+  schedule.frameScheduled();
+  schedule.frameBegan();
+  schedule.frameFinished(RNSkFrameOutcome::kQueued, {1, 2});
+  expect(!schedule.waitRequested(3),
+         "An older frame finishing late does not make newer values look "
+         "undrawn.");
+}
+
 } // namespace
 
 int main() {
@@ -518,6 +605,13 @@ int main() {
   testContentReplacedAdvancesTheRevision();
   testValuesUpdatedDuringAFrameAreNotCoveredByIt();
   testValuesUpdatedDoNotQueueFramesBehindAFullQueueWithoutASurface();
+  testAWaitForNewerValuesQueuesAFrameWithoutASurface();
+  testAWaitForNewerValuesStillWaitsForThePresentWithASurface();
+  testAWaitForNewerValuesStartsAFrameWhileTheQueueHasRoom();
+  testAWaitForDrawnValuesAsksForNothing();
+  testOnlyTheWaitedFrameQueuesWithoutASurface();
+  testAWaitDoesNotCountAFrameOnARetiredTarget();
+  testSubmittedRevisionNeverGoesBack();
   if (failures > 0) {
     std::fprintf(stderr, "%d failure(s)\n", failures);
     return EXIT_FAILURE;
