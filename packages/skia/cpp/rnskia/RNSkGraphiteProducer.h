@@ -1,10 +1,13 @@
 #pragma once
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 
 #include <jsi/jsi.h>
 
+#include "RNSkFrameReadyWaiters.h"
 #include "include/core/SkRefCnt.h"
 
 class SkCanvas;
@@ -15,6 +18,7 @@ namespace RNSkia {
 namespace jsi = facebook::jsi;
 
 class Recorder;
+class RNSkGraphiteRecording;
 class RNSkGraphiteTarget;
 
 /**
@@ -70,6 +74,8 @@ public:
   void setPicture(sk_sp<SkPicture> picture);
 
   bool hasContent();
+
+  void whenFrameReady(std::function<void()> callback);
 
   /**
    Reads the shared values on the calling runtime into the recorder and
@@ -129,6 +135,8 @@ private:
                       sk_sp<SkPicture> picture, bool dirty);
   void kickLocked();
   bool produce();
+  bool finishFrame(const std::shared_ptr<RNSkGraphiteTarget> &target,
+                   std::shared_ptr<RNSkGraphiteRecording> recording);
 
   // Content and scheduling state.
   std::mutex _mutex;
@@ -141,6 +149,8 @@ private:
   bool _dirty = false;
   bool _inFlight = false;
   size_t _queued = 0;
+  uint64_t _generation = 0;
+  RNSkFrameReadyWaiters _readyWaiters;
 };
 
 } // namespace RNSkia

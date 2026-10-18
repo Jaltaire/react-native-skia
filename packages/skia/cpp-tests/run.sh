@@ -17,4 +17,9 @@ for SANITIZER in address,undefined thread; do
     -o "$OUT/RNSkPipelineStorageTest"
   echo "Sanitizer: $SANITIZER"
   "$OUT/RNSkPipelineStorageTest"
+  /usr/bin/clang++ -std=c++20 -O1 -g -fsanitize="$SANITIZER" \
+    -I"$CPP/rnskia" \
+    "$ROOT/packages/skia/cpp-tests/RNSkFrameReadyWaitersTest.cpp" \
+    -o "$OUT/RNSkFrameReadyWaitersTest"
+  "$OUT/RNSkFrameReadyWaitersTest"
 done

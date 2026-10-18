@@ -111,6 +111,19 @@ global.SkiaViewApi = {
   destroyGraphiteContext() {
     // The web view owns its context and lets go of it when it unregisters.
   },
+  whenFrameReady(nativeId: number) {
+    return new Promise<void>((resolve, reject) => {
+      if (!this.views[`${nativeId}`]) {
+        reject(
+          new Error(
+            `Cannot wait for a frame: view with nativeID ${nativeId} is not registered (it may have unmounted)`
+          )
+        );
+        return;
+      }
+      requestAnimationFrame(() => resolve());
+    });
+  },
 } as ISkiaViewApiWeb;
 
 // eslint-disable-next-line import/no-default-export

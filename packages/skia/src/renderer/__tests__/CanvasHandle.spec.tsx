@@ -78,6 +78,24 @@ describe("Canvas ref", () => {
     expect(recordHandle.mock.calls).toEqual([[expect.anything()], [null]]);
   });
 
+  it("waits for a frame of its own view", async () => {
+    const ready = Promise.resolve();
+    const whenFrameReady = jest.fn(() => ready);
+    Object.assign(globalThis, { SkiaViewApi: { whenFrameReady } });
+    const ref = createRef<CanvasRef>();
+    const canvas = mount(<Canvas ref={ref} />);
+    const handle = ref.current;
+    if (handle === null) {
+      throw new Error("Canvas did not attach its ref");
+    }
+    expect(handle.whenFrameReady()).toBe(ready);
+    expect(whenFrameReady).toHaveBeenCalledWith(handle.getNativeId());
+    await expect(handle.whenFrameReady()).resolves.toBeUndefined();
+    expect(whenFrameReady).toHaveBeenCalledTimes(2);
+    canvas.unmount();
+    Object.assign(globalThis, { SkiaViewApi: undefined });
+  });
+
   it("can keep its handle in state", () => {
     const renderedHandles: (CanvasRef | null)[] = [];
     const Owner = () => {

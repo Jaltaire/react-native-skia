@@ -17,6 +17,7 @@
 #include "api/JsiSkGraphiteContext.h"
 #include "api/JsiSkNativeObjects.h"
 
+#include "jsi/JsiPromises.h"
 #include "jsi/ViewProperty.h"
 #include <jsi/jsi.h>
 
@@ -28,6 +29,7 @@ using RNSkViewInfo = struct RNSkViewInfo {
   RNSkViewInfo() { view = nullptr; }
   std::shared_ptr<RNSkView> view;
   std::unordered_map<std::string, RNJsi::ViewProperty> props;
+  std::vector<std::function<void()>> frameReadyWaits;
 };
 
 class ViewRegistry {
@@ -271,6 +273,40 @@ public:
     return jsi::Value::undefined();
   }
 
+  JSI_HOST_FUNCTION(whenFrameReady) {
+    if (count != 1 || !arguments[0].isNumber()) {
+      _platformContext->raiseError(
+          "whenFrameReady: Expected the native id of a view.");
+      return jsi::Value::undefined();
+    }
+    size_t nativeId = static_cast<size_t>(arguments[0].asNumber());
+    auto context = _platformContext;
+    return RNJsi::JsiPromises::createPromiseAsJSIValue(
+        runtime, [context = std::move(context), nativeId](
+                     jsi::Runtime &runtime,
+                     std::shared_ptr<RNJsi::JsiPromises::Promise> promise) {
+          context->runOnMainThread([context, promise, nativeId]() {
+            std::function<void()> resolve = [context, promise]() {
+              context->runOnJavascriptThread(
+                  [promise]() { promise->resolve(jsi::Value::undefined()); });
+            };
+            std::shared_ptr<RNSkView> view;
+            ViewRegistry::getInstance().withViewInfo(
+                nativeId, [&](std::shared_ptr<RNSkViewInfo> info) {
+                  if (info->view != nullptr) {
+                    view = info->view;
+                  } else {
+                    info->frameReadyWaits.push_back(resolve);
+                  }
+                  return nullptr;
+                });
+            if (view != nullptr) {
+              view->whenFrameReady(std::move(resolve));
+            }
+          });
+        });
+  }
+
   JSI_HOST_FUNCTION(size) {
     if (count != 1) {
       _platformContext->raiseError(std::string(
@@ -358,6 +394,8 @@ public:
     installHostMethod(runtime, prototype, "makeImageSnapshot",
                       &RNSkJsiViewApi::makeImageSnapshot);
     installHostMethod(runtime, prototype, "size", &RNSkJsiViewApi::size);
+    installHostMethod(runtime, prototype, "whenFrameReady",
+                      &RNSkJsiViewApi::whenFrameReady);
     installHostMethod(runtime, prototype, "makeGraphiteContext",
                       &RNSkJsiViewApi::makeGraphiteContext);
     installHostMethod(runtime, prototype, "destroyGraphiteContext",
@@ -383,18 +421,7 @@ public:
    * @param view View to register
    */
   void registerSkiaView(size_t nativeId, std::shared_ptr<RNSkView> view) {
-    ViewRegistry::getInstance().withViewInfo(
-        nativeId,
-        [&](std::shared_ptr<RNSkViewInfo> info) {
-          info->view = view;
-          info->view->setNativeId(nativeId);
-
-          info->view->setJsiProperties(info->props);
-          info->props.clear();
-
-          return nullptr;
-        },
-        /* revive= */ true);
+    bindView(nativeId, std::move(view));
   }
 
   /**
@@ -413,23 +440,38 @@ public:
    or a valid view, effectively toggling the view's availability.
    */
   void setSkiaView(size_t nativeId, std::shared_ptr<RNSkView> view) {
-    ViewRegistry::getInstance().withViewInfo(
-        nativeId,
-        [&](std::shared_ptr<RNSkViewInfo> info) {
-          if (view != nullptr) {
-            info->view = view;
-            info->view->setNativeId(nativeId);
-            info->view->setJsiProperties(info->props);
-            info->props.clear();
-          } else {
-            info->view = view; // Set to nullptr
-          }
-          return nullptr;
-        },
-        /* revive= */ view != nullptr);
+    if (view == nullptr) {
+      ViewRegistry::getInstance().withViewInfo(
+          nativeId,
+          [&](std::shared_ptr<RNSkViewInfo> info) {
+            info->view = nullptr;
+            return nullptr;
+          },
+          /* revive= */ false);
+      return;
+    }
+    bindView(nativeId, std::move(view));
   }
 
 private:
+  static void bindView(size_t nativeId, std::shared_ptr<RNSkView> view) {
+    std::vector<std::function<void()>> frameReadyWaits;
+    ViewRegistry::getInstance().withViewInfo(
+        nativeId,
+        [&](std::shared_ptr<RNSkViewInfo> info) {
+          info->view = view;
+          info->view->setNativeId(nativeId);
+          info->view->setJsiProperties(info->props);
+          info->props.clear();
+          frameReadyWaits = std::exchange(info->frameReadyWaits, {});
+          return nullptr;
+        },
+        /* revive= */ true);
+    for (auto &wait : frameReadyWaits) {
+      view->whenFrameReady(std::move(wait));
+    }
+  }
+
   std::shared_ptr<RNSkPlatformContext> _platformContext;
 };
 } // namespace RNSkia

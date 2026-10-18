@@ -27,6 +27,7 @@ import { Skia } from "../skia";
 export interface CanvasRef {
   makeImageSnapshot(rect?: SkRect): SkImage;
   redraw(): void;
+  whenFrameReady(): Promise<void>;
   getNativeId(): number;
   measure(callback: MeasureOnSuccessCallback): void;
   measureInWindow(callback: MeasureInWindowOnSuccessCallback): void;
@@ -128,6 +129,9 @@ const useCanvasRoot = ({
 
       redraw: () => {
         SkiaViewApi.requestRedraw(nativeId);
+      },
+      whenFrameReady: () => {
+        return SkiaViewApi.whenFrameReady(nativeId);
       },
       getNativeId: () => {
         return nativeId;

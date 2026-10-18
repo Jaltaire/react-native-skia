@@ -2,6 +2,7 @@
 // RNSkGraphiteProducer.h (which the view headers include on their own).
 #include "RNSkGraphiteProducer.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -69,6 +70,7 @@ void RNSkGraphiteProducer::replaceContent(std::shared_ptr<Recorder> recorder,
     std::lock_guard<std::mutex> lock(_mutex);
     retiredRecorder = std::exchange(_recorder, std::move(recorder));
     retiredPicture = std::exchange(_picture, std::move(picture));
+    _generation++;
     _dirty = dirty;
     if (dirty) {
       kickLocked();
@@ -137,6 +139,15 @@ bool RNSkGraphiteProducer::produceInStep(bool presentsNow) {
   return produce();
 }
 
+void RNSkGraphiteProducer::whenFrameReady(std::function<void()> callback) {
+  uint64_t generation;
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    generation = std::max<uint64_t>(_generation, 1);
+  }
+  _readyWaiters.wait(generation, std::move(callback));
+}
+
 bool RNSkGraphiteProducer::requestFrame() {
   std::lock_guard<std::mutex> lock(_mutex);
   _dirty = true;
@@ -172,11 +183,13 @@ bool RNSkGraphiteProducer::produce() {
   std::shared_ptr<RNSkGraphiteTarget> target;
   std::shared_ptr<Recorder> recorder;
   sk_sp<SkPicture> picture;
+  uint64_t generation;
   {
     std::lock_guard<std::mutex> lock(_mutex);
     target = _target;
     recorder = _recorder;
     picture = _picture;
+    generation = _generation;
     _dirty = false;
   }
   std::shared_ptr<RNSkGraphiteRecording> recording;
@@ -208,6 +221,16 @@ bool RNSkGraphiteProducer::produce() {
     RNSkLogger::logToConsole(
         "Canvas: a pipeline of the frame failed to compile.");
   }
+  const bool queued = finishFrame(target, std::move(recording));
+  if (queued) {
+    _readyWaiters.ready(generation);
+  }
+  return queued;
+}
+
+bool RNSkGraphiteProducer::finishFrame(
+    const std::shared_ptr<RNSkGraphiteTarget> &target,
+    std::shared_ptr<RNSkGraphiteRecording> recording) {
   std::lock_guard<std::mutex> lock(_mutex);
   _inFlight = false;
   if (recording != nullptr) {
