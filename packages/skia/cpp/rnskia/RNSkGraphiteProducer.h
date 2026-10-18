@@ -28,7 +28,9 @@ class RNSkGraphiteTarget;
  * waits for a replay. A pool thread replays the commands (the recorder writes
  * the pending values into them first) into a deferred canvas of the view's
  * target and submits the recording; the main thread presents it on the next
- * vsync.
+ * vsync. A mapper running on the UI thread itself does all of it there, in
+ * the same step (see RNSkView::applyUpdates), unless a pool job is in flight
+ * or the queue is full.
  *
  * Pacing: a view has at most one job in flight, and the pool keeps at most one
  * frame ahead of the display: a job may start while the previous recording is
@@ -85,6 +87,11 @@ public:
                              jsi::Runtime &runtime, double recorderId,
                              const jsi::Array &values);
 
+  bool readUpdates(jsi::Runtime &runtime, double recorderId,
+                   const jsi::Array &values);
+
+  bool produceInStep(bool presentsNow);
+
   /**
    Marks the content dirty and schedules a frame if one can start. Returns
    whether a frame is coming at all: there is content and a target to record
@@ -121,7 +128,7 @@ private:
   void replaceContent(std::shared_ptr<Recorder> recorder,
                       sk_sp<SkPicture> picture, bool dirty);
   void kickLocked();
-  void produce();
+  bool produce();
 
   // Content and scheduling state.
   std::mutex _mutex;

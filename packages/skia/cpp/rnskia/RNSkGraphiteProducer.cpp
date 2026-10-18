@@ -114,6 +114,29 @@ bool RNSkGraphiteProducer::applyUpdates(jsi::Runtime &runtime,
   return true;
 }
 
+bool RNSkGraphiteProducer::readUpdates(jsi::Runtime &runtime, double recorderId,
+                                       const jsi::Array &values) {
+  std::shared_ptr<Recorder> recorder;
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    recorder = _recorder;
+  }
+  return applyUpdatesTo(recorder, runtime, recorderId, values);
+}
+
+bool RNSkGraphiteProducer::produceInStep(bool presentsNow) {
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    const size_t room = presentsNow ? kMaxQueued + 1 : kMaxQueued;
+    if (_inFlight || _queued >= room || _target == nullptr ||
+        (_recorder == nullptr && _picture == nullptr)) {
+      return false;
+    }
+    _inFlight = true;
+  }
+  return produce();
+}
+
 bool RNSkGraphiteProducer::requestFrame() {
   std::lock_guard<std::mutex> lock(_mutex);
   _dirty = true;
@@ -145,7 +168,7 @@ void RNSkGraphiteProducer::kickLocked() {
   });
 }
 
-void RNSkGraphiteProducer::produce() {
+bool RNSkGraphiteProducer::produce() {
   std::shared_ptr<RNSkGraphiteTarget> target;
   std::shared_ptr<Recorder> recorder;
   sk_sp<SkPicture> picture;
@@ -201,7 +224,7 @@ void RNSkGraphiteProducer::produce() {
       if (_dirty) {
         kickLocked();
       }
-      return;
+      return true;
     }
     // The frame went to the previous target; the new one has none yet.
   }
@@ -214,6 +237,7 @@ void RNSkGraphiteProducer::produce() {
   if (requested) {
     kickLocked();
   }
+  return false;
 }
 
 void RNSkGraphiteProducer::renderInto(SkCanvas *canvas, float pixelDensity) {

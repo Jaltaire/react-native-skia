@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -10,6 +11,12 @@
 #include <vector>
 
 #include <jsi/jsi.h>
+
+#if defined(__APPLE__)
+#include <pthread.h>
+#elif defined(__ANDROID__)
+#include <unistd.h>
+#endif
 
 #include "RNSkGraphiteProducer.h"
 #include "RNSkGraphiteTarget.h"
@@ -137,6 +144,13 @@ public:
    */
   bool applyUpdates(jsi::Runtime &runtime, double recorderId,
                     const jsi::Array &values) {
+    if (isUiThread()) {
+      if (!_producer->readUpdates(runtime, recorderId, values)) {
+        return false;
+      }
+      presentInStep();
+      return true;
+    }
     return _producer->applyUpdates(runtime, recorderId, values);
   }
 
@@ -256,6 +270,10 @@ public:
     _frameScheduler = std::move(scheduler);
   }
 
+  void setInStepPresentHandler(std::function<void()> handler) {
+    _inStepPresentHandler = std::move(handler);
+  }
+
   /** Main thread: a recording is waiting. */
   void scheduleFrame() {
     if (_frameScheduler) {
@@ -290,6 +308,7 @@ public:
     if (!presentOrKeep(*target, targetInfo, recordings)) {
       return true;
     }
+    _presentedFrames++;
     _producer->onFramePresented(recordings.size());
     return target->hasQueued();
   }
@@ -318,6 +337,32 @@ public:
   }
 
 private:
+  static bool isUiThread() {
+#if defined(__APPLE__)
+    return pthread_main_np() != 0;
+#elif defined(__ANDROID__)
+    return gettid() == getpid();
+#else
+    return false;
+#endif
+  }
+
+  bool presentsNow() {
+    RNSkGraphiteTargetInfo targetInfo;
+    return _surface->getTargetInfo(&targetInfo) && _surface->canPresent();
+  }
+
+  void presentInStep() {
+    const uint64_t presentedBefore = _presentedFrames;
+    if (!_producer->produceInStep(presentsNow())) {
+      _producer->requestFrame();
+    }
+    presentFrame();
+    if (_presentedFrames != presentedBefore && _inStepPresentHandler) {
+      _inStepPresentHandler();
+    }
+  }
+
   std::shared_ptr<RNSkGraphiteTarget> getTarget() {
     std::lock_guard<std::mutex> lock(_mutex);
     return _target;
@@ -502,6 +547,8 @@ private:
   std::shared_ptr<RNSkGraphiteProducer> _producer;
   size_t _nativeId = 0;
   std::function<void()> _frameScheduler;
+  std::function<void()> _inStepPresentHandler;
+  uint64_t _presentedFrames = 0;
   std::atomic<bool> _redrawRequested = {false};
 
   // The target is bound on the JS thread and read on the main thread and by
