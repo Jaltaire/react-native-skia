@@ -23,6 +23,8 @@
 
 #include <ReactCommon/CallInvoker.h>
 
+#include "RNSkCompatibilityConfig.h"
+
 namespace RNSkia {
 
 namespace react = facebook::react;
@@ -134,6 +136,13 @@ public:
   virtual bool prefersP3ColorSpace() { return false; }
 
   virtual std::string getCacheDirectory() = 0;
+
+  /**
+   * How the app configures rendering at the WebGPU compatibility level, read
+   * from the app's build settings before the GPU is probed (see
+   * RNSkCompatibilityConfig). The default allows it.
+   */
+  virtual RNSkCompatibilityConfig getCompatibilityConfig() { return {}; }
 
 private:
   float _pixelDensity;

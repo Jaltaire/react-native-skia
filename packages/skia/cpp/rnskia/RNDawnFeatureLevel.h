@@ -95,16 +95,29 @@ inline bool requestsTransientAttachments(RNSkFeatureLevel level,
  The adapter `find` returns at the first level, in kRNSkFeatureLevels order,
  where it returns one, with that level; nullopt when it returns none at any
  level. `find` is not asked at a lower level once a higher one has an adapter.
+ `mayTryCompatibility` is called only when there is no core adapter, before
+ `find` is asked at the compatibility level, and that level is skipped when
+ it returns false: a device with a core adapter never calls it.
  */
-template <typename Adapter, typename Find>
-std::optional<std::pair<Adapter, RNSkFeatureLevel>> chooseAdapter(Find &&find) {
+template <typename Adapter, typename Find, typename MayTryCompatibility>
+std::optional<std::pair<Adapter, RNSkFeatureLevel>>
+chooseAdapter(Find &&find, MayTryCompatibility &&mayTryCompatibility) {
   for (auto level : kRNSkFeatureLevels) {
+    if (level == RNSkFeatureLevel::Compatibility && !mayTryCompatibility()) {
+      return std::nullopt;
+    }
     std::optional<Adapter> adapter = find(level);
     if (adapter) {
       return std::make_pair(std::move(*adapter), level);
     }
   }
   return std::nullopt;
+}
+
+/** chooseAdapter, with the compatibility level always allowed. */
+template <typename Adapter, typename Find>
+std::optional<std::pair<Adapter, RNSkFeatureLevel>> chooseAdapter(Find &&find) {
+  return chooseAdapter<Adapter>(std::forward<Find>(find), []() { return true; });
 }
 
 } // namespace RNSkia

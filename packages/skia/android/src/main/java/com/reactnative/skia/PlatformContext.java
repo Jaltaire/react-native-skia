@@ -1,5 +1,8 @@
 package com.reactnative.skia;
 
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -27,10 +30,29 @@ public class PlatformContext {
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
+    /**
+     * The manifest meta-data that turns off rendering at the WebGPU compatibility level on
+     * devices without a core adapter. Absent, the level is allowed.
+     */
+    static final String COMPATIBILITY_FEATURE_LEVEL_KEY =
+            "com.reactnative.skia.COMPATIBILITY_FEATURE_LEVEL";
+
     public PlatformContext(ReactContext reactContext) {
         mContext = reactContext;
         mHybridData = initHybrid(reactContext.getResources().getDisplayMetrics().density,
-                reactContext.getCacheDir().getAbsolutePath());
+                reactContext.getCacheDir().getAbsolutePath(),
+                compatibilityFeatureLevelAllowed(reactContext));
+    }
+
+    static boolean compatibilityFeatureLevelAllowed(ReactContext context) {
+        try {
+            ApplicationInfo info = context.getPackageManager().getApplicationInfo(
+                    context.getPackageName(), PackageManager.GET_META_DATA);
+            Bundle metaData = info.metaData;
+            return metaData == null || metaData.getBoolean(COMPATIBILITY_FEATURE_LEVEL_KEY, true);
+        } catch (PackageManager.NameNotFoundException e) {
+            return true;
+        }
     }
 
     private byte[] getStreamAsBytes(InputStream is) throws IOException {
@@ -116,7 +138,8 @@ public class PlatformContext {
     }
 
     // Private c++ native methods
-    private native HybridData initHybrid(float pixelDensity, String cacheDirectory);
+    private native HybridData initHybrid(float pixelDensity, String cacheDirectory,
+            boolean compatibilityFeatureLevelAllowed);
 
     private native void notifyTaskReadyNative();
 }

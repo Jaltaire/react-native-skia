@@ -25,8 +25,10 @@ void JniPlatformContext::registerNatives() {
 
 TSelf JniPlatformContext::initHybrid(jni::alias_ref<jhybridobject> jThis,
                                      float pixelDensity,
-                                     std::string cacheDirectory) {
-  return makeCxxInstance(jThis, pixelDensity, std::move(cacheDirectory));
+                                     std::string cacheDirectory,
+                                     bool compatibilityFeatureLevelAllowed) {
+  return makeCxxInstance(jThis, pixelDensity, std::move(cacheDirectory),
+                         compatibilityFeatureLevelAllowed);
 }
 
 void JniPlatformContext::performStreamOperation(

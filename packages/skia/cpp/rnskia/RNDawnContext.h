@@ -21,6 +21,7 @@
 
 #include "RNDawnUtils.h"
 #include "RNImageProvider.h"
+#include "RNSkCompatibilityConfig.h"
 #include "RNSkPipelineStorage.h"
 #include "utils/RNSkLog.h"
 
@@ -135,6 +136,23 @@ public:
    */
   static bool isDeviceLost() noexcept {
     return lostState().lost.load(std::memory_order_acquire);
+  }
+
+  /**
+   How the app configures the compatibility level (see
+   RNSkCompatibilityConfig). Set by the platform before the probe starts; a
+   value set after the context was created is ignored.
+   */
+  static void setCompatibilityConfig(const RNSkCompatibilityConfig &config) {
+    auto &state = compatibilityState();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (state.claimed) {
+      RNSkLogger::logToConsole(
+          "The compatibility level's configuration was set after the Dawn "
+          "context was created. Keeping the earlier one.");
+      return;
+    }
+    state.config = config;
   }
 
   static void setPipelineCacheDirectory(const std::string &directory) {
@@ -608,6 +626,24 @@ private:
     return *config;
   }
 
+  struct CompatibilityState {
+    std::mutex mutex;
+    RNSkCompatibilityConfig config;
+    bool claimed = false;
+  };
+
+  static CompatibilityState &compatibilityState() {
+    static auto *state = new CompatibilityState();
+    return *state;
+  }
+
+  static RNSkCompatibilityConfig claimCompatibilityConfig() {
+    auto &state = compatibilityState();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.claimed = true;
+    return state.config;
+  }
+
   static std::string claimPipelineCacheDirectory() {
     auto &config = pipelineCacheConfig();
     std::lock_guard<std::mutex> lock(config.mutex);
@@ -770,7 +806,8 @@ private:
     _pipelineStorage = RNSkPipelineStorage::Open(
         claimPipelineCacheDirectory(), "m" + std::to_string(SK_MILESTONE));
     backendContext = DawnUtils::createDawnBackendContext(
-        instance.get(), &_deviceLostListener, _pipelineStorage.get());
+        instance.get(), &_deviceLostListener, _pipelineStorage.get(),
+        claimCompatibilityConfig());
 
     skgpu::graphite::ContextOptions ctxOptions;
     skgpu::graphite::ContextOptionsPriv contextOptionsPriv;

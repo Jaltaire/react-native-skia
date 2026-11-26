@@ -48,6 +48,8 @@ public:
 
   std::string getCacheDirectory() override;
 
+  RNSkCompatibilityConfig getCompatibilityConfig() override;
+
   void runOnMainThread(std::function<void()>) override;
 
   virtual void performStreamOperation(

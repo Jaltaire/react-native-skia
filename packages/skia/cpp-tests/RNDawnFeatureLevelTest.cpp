@@ -1,4 +1,5 @@
 #include "RNDawnFeatureLevel.h"
+#include "RNSkCompatibilityConfig.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -7,6 +8,8 @@
 #include <vector>
 
 using RNSkia::chooseAdapter;
+using RNSkia::compatibilityRefusal;
+using RNSkia::RNSkCompatibilityConfig;
 using RNSkia::featureLevelName;
 using RNSkia::featureLevelOfDevice;
 using RNSkia::requestsTransientAttachments;
@@ -33,13 +36,70 @@ struct Device {
   std::optional<std::string> compatibility;
   std::vector<RNSkFeatureLevel> asked;
 
+  int gateCalls = 0;
+
   std::optional<std::pair<std::string, RNSkFeatureLevel>> choose() {
     return chooseAdapter<std::string>([this](RNSkFeatureLevel level) {
       asked.push_back(level);
       return level == RNSkFeatureLevel::Core ? core : compatibility;
     });
   }
+
+  std::optional<std::pair<std::string, RNSkFeatureLevel>>
+  chooseWithGate(bool mayTryCompatibility) {
+    return chooseAdapter<std::string>(
+        [this](RNSkFeatureLevel level) {
+          asked.push_back(level);
+          return level == RNSkFeatureLevel::Core ? core : compatibility;
+        },
+        [this, mayTryCompatibility]() {
+          gateCalls++;
+          return mayTryCompatibility;
+        });
+  }
 };
+
+void coreAdapterNeverConsultsTheCompatibilityGate() {
+  Device device{"Adreno 740", "Adreno 740", {}};
+  auto chosen = device.chooseWithGate(false);
+  expect(chosen && chosen->second == RNSkFeatureLevel::Core,
+         "a device with a core adapter renders at the core level whatever "
+         "the gate would say");
+  expect(device.gateCalls == 0,
+         "a device with a core adapter never consults the compatibility gate");
+}
+
+void refusedCompatibilityIsNeverAskedFor() {
+  Device device{std::nullopt, "PowerVR Rogue GE8320", {}};
+  auto chosen = device.chooseWithGate(false);
+  expect(!chosen.has_value(),
+         "a device without a core adapter has none when compatibility is "
+         "refused");
+  expect(device.gateCalls == 1, "the gate is consulted once");
+  expect(device.asked == std::vector<RNSkFeatureLevel>{RNSkFeatureLevel::Core},
+         "a refused compatibility level is never asked for");
+}
+
+void allowedCompatibilityIsAskedForAfterCore() {
+  Device device{std::nullopt, "PowerVR Rogue GE8320", {}};
+  auto chosen = device.chooseWithGate(true);
+  expect(chosen && chosen->second == RNSkFeatureLevel::Compatibility,
+         "an allowed compatibility level is chosen when core has none");
+  expect(device.gateCalls == 1, "the gate is consulted once");
+}
+
+void buildSettingsAllowCompatibilityUnlessTurnedOff() {
+  expect(!compatibilityRefusal(RNSkCompatibilityConfig{}).has_value(),
+         "the compatibility level is allowed when the app sets nothing");
+  RNSkCompatibilityConfig off;
+  off.allowed = false;
+  auto refusal = compatibilityRefusal(off);
+  expect(refusal.has_value() &&
+             refusal->find("turned off in this app's build settings") !=
+                 std::string::npos,
+         "the compatibility level is refused, and says why, when the app's "
+         "build turns it off");
+}
 
 void coreAdapterIsChosenWithoutAskingForCompatibility() {
   Device device{"Adreno 740", "Adreno 740", {}};
@@ -137,6 +197,10 @@ int main() {
   coreAdapterIsChosenWithoutAskingForCompatibility();
   compatibilityAdapterIsChosenWhenCoreHasNone();
   noAdapterAtEitherLevelChoosesNone();
+  coreAdapterNeverConsultsTheCompatibilityGate();
+  refusedCompatibilityIsNeverAskedFor();
+  allowedCompatibilityIsAskedForAfterCore();
+  buildSettingsAllowCompatibilityUnlessTurnedOff();
   levelsAreNamedAsSkiaGpuReportsThem();
   deviceLevelFollowsCoreFeaturesAndLimits();
   coreKeepsTheDefaultColorAttachmentLimit();

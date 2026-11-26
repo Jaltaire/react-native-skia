@@ -161,6 +161,16 @@ RNSkApplePlatformContext::resolveFontFamily(const std::string &familyName) {
   return familyName;
 }
 
+RNSkCompatibilityConfig RNSkApplePlatformContext::getCompatibilityConfig() {
+  RNSkCompatibilityConfig config;
+  id allowed = [[NSBundle mainBundle]
+      objectForInfoDictionaryKey:@"RNSkiaCompatibilityFeatureLevel"];
+  if ([allowed isKindOfClass:[NSNumber class]]) {
+    config.allowed = [allowed boolValue];
+  }
+  return config;
+}
+
 std::string RNSkApplePlatformContext::getCacheDirectory() {
   NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(
       NSCachesDirectory, NSUserDomainMask, YES);

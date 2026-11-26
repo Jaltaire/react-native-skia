@@ -45,6 +45,12 @@ public:
     return _jniPlatformContext->getCacheDirectory();
   }
 
+  RNSkCompatibilityConfig getCompatibilityConfig() override {
+    RNSkCompatibilityConfig config;
+    config.allowed = _jniPlatformContext->compatibilityFeatureLevelAllowed();
+    return config;
+  }
+
   sk_sp<SkSurface> makeOffscreenSurface(int width, int height,
                                         bool useP3ColorSpace = false) override {
     return DawnContext::getInstance().MakeOffscreen(width, height,

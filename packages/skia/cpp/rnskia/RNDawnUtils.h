@@ -13,6 +13,7 @@
 
 #include "RNDawnDeviceRequest.h"
 #include "RNDawnFeatureLevel.h"
+#include "RNSkCompatibilityConfig.h"
 #include "RNSkPipelineStorage.h"
 #include "webgpu/webgpu_cpp.h"
 
@@ -259,13 +260,30 @@ struct MatchedAdapter {
   RNSkia::RNSkFeatureLevel featureLevel;
 };
 
-inline MatchedAdapter getMatchedAdapter(dawn::native::Instance *instance) {
+// `refuseCompatibility`, when given, is asked only on a device without a core
+// adapter, and says why the compatibility level is not tried (nullopt when it
+// may be); its reason ends the missing-adapter message.
+inline MatchedAdapter getMatchedAdapter(
+    dawn::native::Instance *instance,
+    const std::function<std::optional<std::string>()> &refuseCompatibility =
+        {}) {
+  std::optional<std::string> refusal;
   auto chosen = RNSkia::chooseAdapter<dawn::native::Adapter>(
       [instance](RNSkia::RNSkFeatureLevel level) {
         return findPlatformAdapter(instance, level);
+      },
+      [&refuseCompatibility, &refusal]() {
+        if (refuseCompatibility) {
+          refusal = refuseCompatibility();
+        }
+        return !refusal.has_value();
       });
   if (!chosen) {
-    throw std::runtime_error(describeMissingAdapter(instance));
+    auto message = describeMissingAdapter(instance);
+    if (refusal) {
+      message += " " + *refusal;
+    }
+    throw std::runtime_error(message);
   }
   return {chosen->first, chosen->second};
 }
@@ -425,12 +443,16 @@ requestDevice(dawn::native::Adapter &nativeAdapter,
 
 // `listener` is told of the primary device's loss (see DeviceLostListener)
 // and must outlive the device, as must `pipelineStorage` when given.
+// `compatibility` is the app's configuration of the compatibility level.
 inline skgpu::graphite::DawnBackendContext
 createDawnBackendContext(dawn::native::Instance *instance,
                          DeviceLostListener *listener,
-                         const RNSkia::RNSkPipelineStorage *pipelineStorage) {
+                         const RNSkia::RNSkPipelineStorage *pipelineStorage,
+                         const RNSkia::RNSkCompatibilityConfig &compatibility) {
 
-  auto matched = getMatchedAdapter(instance);
+  auto matched = getMatchedAdapter(instance, [&compatibility]() {
+    return RNSkia::compatibilityRefusal(compatibility);
+  });
   auto &matchedAdapter = matched.adapter;
   wgpu::Adapter adapter = matchedAdapter.Get();
 
