@@ -870,6 +870,46 @@ void exactlyOneOfThePrecompileAndTheWorkSettles() {
   expect(!file.read().has_value(), "and the record is removed");
 }
 
+void aPrecompileStartedFromTwoThreadsCountsOnce() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int round = 0; round < 200; round++) {
+    file.write({"1.0 (1)", 1});
+    auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+    RNSkCompatibilityAttempt attempt;
+    attempt.beginCreation(file, decision.record);
+    if (round % 2 == 0) {
+      attempt.endCreation(true);
+    }
+    std::atomic<int> counted{0};
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < 2; thread++) {
+      threads.emplace_back([&attempt, &counted]() {
+        if (attempt.beginPrecompile()) {
+          counted.fetch_add(1);
+        }
+      });
+    }
+    for (auto &thread : threads) {
+      thread.join();
+    }
+    if (counted.load() != 1 || recorded(file) != 2) {
+      expect(false, "two threads starting the precompile at once count it "
+                    "once: the record holds the found count plus one, not "
+                    "plus two");
+      return;
+    }
+    attempt.endCreation(true);
+    attempt.endPrecompile();
+    if (recorded(file) != 1) {
+      expect(false, "and its end puts back the count the launch found");
+      return;
+    }
+    file.remove();
+  }
+  expect(true, "two threads starting the precompile at once count it once");
+}
+
 void anUnusedAttemptWatchesNothing() {
   RNSkCompatibilityAttempt attempt;
   expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Unused,
@@ -921,6 +961,7 @@ int main() {
   onlyTheFirstPrecompileIsCounted();
   aPrecompileThatCannotRecordStopsWatching();
   exactlyOneOfThePrecompileAndTheWorkSettles();
+  aPrecompileStartedFromTwoThreadsCountsOnce();
   anUnusedAttemptWatchesNothing();
   if (failures > 0) {
     std::fprintf(stderr, "%d expectation(s) failed\n", failures);
