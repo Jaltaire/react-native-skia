@@ -169,9 +169,13 @@ parseCompatibilityAttempts(const std::string &text) {
  read, so the second can read the first's raised count as its own found
  count: two processes ended inside their windows then record two for one
  launch, and the level stops after one such launch rather than two. That is
- the conservative direction (the level stops earlier, never later). An app
- whose library loads in one process only, as Android starts a process per
- process name and React Native runs in the app's main one, never meets it.
+ the conservative direction (the level stops earlier, never later). One
+ process's consult can also remove the temporary file of a write the other
+ is making (see removeStaleTemporaryFiles): that write fails, so that
+ process does not try the level on that launch, or stops counting and leaves
+ the record as it was. An app whose library loads in one process only, as
+ Android starts a process per process name and React Native runs in the
+ app's main one, never meets either.
  */
 class RNSkCompatibilityGuardFile {
 public:
@@ -419,13 +423,16 @@ enum class RNSkCompatibilityWork {
  while P runs, P's end writes nothing. Within FirstWork, a submission of a
  window frame or an offscreen draw becomes the watched one when none is
  (watch); a watched submission that carried no work (every recording
- rejected) or a window frame dropped before its present stops being watched
- (unwatch) and the next one is watched, with no write: a canvas whose
- batches are all rejected keeps the window open, raises nothing more, and
- settles nothing. An offscreen draw that finishes after a window surface was
- made or a window frame snapped leaves the window open, and from then on
- only a window frame is watched; in OffscreenFinished an offscreen draw opens
- nothing and is not watched. A device lost in FirstWork with nothing watched
+ rejected) stops being watched (unwatch) and the next one is watched, with
+ no write: a canvas whose batches are all rejected keeps the window open,
+ raises nothing more, and settles nothing. An offscreen draw that finishes
+ after a window surface was made or a window frame snapped leaves the window
+ open, and from then on only a window frame is watched; in OffscreenFinished
+ an offscreen draw opens nothing and is not watched. A window frame
+ submitted while an offscreen draw is the watched work is not watched
+ itself; the next window frame is. So a canvas that draws exactly one frame
+ in that gap leaves a healthy launch counted until a later frame settles it:
+ the over-counting side. A device lost in FirstWork with nothing watched
  leaves the window open, so the launch counts when it ends, as in Failed.
 
  The first-work window is published (the phase becomes FirstWork) only once

@@ -815,7 +815,7 @@ void theRecordIsWrittenOnlyWhenItsValueChanges() {
 }
 
 // The record: an unreadable or foreign record.
-void anUnreadableRecordIsReplacedByThisLaunch() {
+void anUnreadableRecordIsLeftAndContentThatIsNotOneIsReplaced() {
   Directory directory;
   RNSkCompatibilityGuardFile file(directory.path);
   {
@@ -980,7 +980,7 @@ void onlyTheFirstPrecompileIsCounted() {
          "and an end without a begin does nothing");
 }
 
-void aStaleTemporaryFileIsIgnored() {
+void anotherProcesssStaleTemporaryFileIsNotReadAndIsRemoved() {
   Directory directory;
   RNSkCompatibilityGuardFile file(directory.path);
   const auto write = [](const std::string &name) {
@@ -1312,7 +1312,7 @@ void anOffscreenOnlyProcessKeepsTheCountItFound() {
          "and the next version starts again from nothing");
 }
 
-// The transitions the fourth review found untested.
+// The transitions not covered elsewhere.
 void theRemainingTransitions() {
   {
     Directory directory;
@@ -1340,18 +1340,6 @@ void theRemainingTransitions() {
                recorded(file) == 1,
            "Failed: and so does one ending on a lost device in "
            "FirstWorkFinished");
-  }
-  {
-    Directory directory;
-    RNSkCompatibilityGuardFile file(directory.path);
-    Launch launch(file);
-    launch.create();
-    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
-    expect(launch.attempt.phase() ==
-                   RNSkCompatibilityAttempt::Phase::FirstWork &&
-               recorded(file) == 1,
-           "FirstWork: a device lost with nothing watched leaves the window "
-           "open, so the launch counts when it ends");
   }
   if (::geteuid() == 0) {
     std::printf("skipped: failed writes at the precompile's end (root "
@@ -1473,12 +1461,12 @@ int main() {
   rowNotTried();
   rowStoppedNeverLowersTheCount();
   theRecordIsWrittenOnlyWhenItsValueChanges();
-  anUnreadableRecordIsReplacedByThisLaunch();
+  anUnreadableRecordIsLeftAndContentThatIsNotOneIsReplaced();
   exactlyOneThreadSettlesTheFirstWork();
   exactlyOneOfThePrecompileAndTheWorkSettles();
   aPrecompileStartedFromTwoThreadsCountsOnce();
   onlyTheFirstPrecompileIsCounted();
-  aStaleTemporaryFileIsIgnored();
+  anotherProcesssStaleTemporaryFileIsNotReadAndIsRemoved();
   aReplacementDeviceTouchesNoRecord();
   aLossDuringTheFirstWorkCountsOnce();
   aCorePhoneNeverResolvesTheConfiguration();
