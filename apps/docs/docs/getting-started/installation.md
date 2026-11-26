@@ -84,6 +84,9 @@ Skia therefore counts an attempt at the compatibility level while the driver is 
 It keeps the count in a directory of the app's that is kept out of backups, and removes it once that first work is finished.
 If two launches in a row on the same app version end inside those windows, Skia stops trying the level on that version: the device renders as it did before the level existed (`Skia.gpu.isAvailable` false, blank canvases), and `Skia.gpu.error` says why.
 The next app version tries the level again.
+The first work counts as finished only when its present succeeded and the GPU reported it done on a device that was not lost.
+A fault after that first work, on a later frame or a heavier screen, is not caught: the count is removed at every launch that gets that far.
+For such a fault, the build setting above is the backstop.
 A launch that never draws (a background start, or one left from a screen without a canvas) neither counts nor resets the count.
 If the count cannot be written, Skia does not try the level.
 Devices with a core adapter never read or write the count, and never read the app's build setting, directories, or version: Skia reads them only after it found no core adapter.

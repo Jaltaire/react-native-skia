@@ -95,9 +95,9 @@ RNSkCompatibilityPlan launch(const RNSkCompatibilityGuardFile &file,
   if (ending == Ending::InFirstWork) {
     return decision.plan;
   }
-  attempt.noteWorkDone();
+  attempt.noteWorkDone(true);
   if (window) {
-    attempt.notePresented();
+    attempt.notePresented(true);
   }
   return decision.plan;
 }
@@ -283,13 +283,40 @@ void aWindowFrameNeedsItsPresentToo() {
   attempt.beginCreation(file, decision.record);
   attempt.endCreation(true);
   expect(attempt.beginFirstWork(true), "the first window frame is watched");
-  expect(!attempt.noteWorkDone(),
+  expect(!attempt.noteWorkDone(true),
          "a window frame whose work finished is not settled before its "
          "present");
   expect(recorded(file) == 1, "and stays counted until then");
-  expect(attempt.notePresented(), "its present settles it");
+  expect(attempt.notePresented(true), "its present settles it");
   expect(!file.read().has_value(), "and removes the record");
   expect(!attempt.beginFirstWork(false), "later work is not watched");
+}
+
+void aFailedFirstWorkStaysCounted() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int launchNumber = 0; launchNumber < 2; launchNumber++) {
+    auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+    RNSkCompatibilityAttempt attempt;
+    attempt.beginCreation(file, decision.record);
+    attempt.endCreation(true);
+    attempt.beginFirstWork(true);
+    if (launchNumber == 0) {
+      attempt.noteWorkDone(true);
+      expect(!attempt.notePresented(false),
+             "a present that failed, or a device lost during the first "
+             "frame, does not settle the attempt");
+    } else {
+      expect(!attempt.noteWorkDone(false),
+             "nor does work the GPU did not finish");
+    }
+    expect(!attempt.notePresented(true) && !attempt.noteWorkDone(true),
+           "and later reports change nothing");
+  }
+  expect(decideCompatibilityAttempt(file.read(), "1.0 (1)", true).plan ==
+             RNSkCompatibilityPlan::StopUnfinished,
+         "a driver that loses the device on its first frame at every launch "
+         "is stopped");
 }
 
 void aBatchWithNoWorkIsNotTheFirstWork() {
@@ -344,8 +371,8 @@ void aReplacementDeviceTouchesNoRecord() {
   attempt.beginCreation(*first.file, first.decision->record);
   attempt.endCreation(true);
   attempt.beginFirstWork(true);
-  attempt.noteWorkDone();
-  attempt.notePresented();
+  attempt.noteWorkDone(true);
+  attempt.notePresented(true);
   for (int loss = 0; loss < 3; loss++) {
     RNSkCompatibilityGuardState replacement;
     expect(!consultCompatibilityGuard(attempt, [&config]() { return config; }, replacement)
@@ -428,8 +455,8 @@ void anUnusedAttemptWatchesNothing() {
   RNSkCompatibilityAttempt attempt;
   expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Unused,
          "a process on a device with a core adapter never begins an attempt");
-  expect(!attempt.beginFirstWork(true) && !attempt.noteWorkDone() &&
-             !attempt.notePresented(),
+  expect(!attempt.beginFirstWork(true) && !attempt.noteWorkDone(true) &&
+             !attempt.notePresented(true),
          "and watches no submission");
 }
 
@@ -450,6 +477,7 @@ int main() {
   aProcessThatNeverDrawsNeitherCountsNorResets();
   offscreenFirstWorkSettlesWithoutAPresent();
   aWindowFrameNeedsItsPresentToo();
+  aFailedFirstWorkStaysCounted();
   aBatchWithNoWorkIsNotTheFirstWork();
   aSuccessResetsTheCount();
   aReplacementDeviceTouchesNoRecord();

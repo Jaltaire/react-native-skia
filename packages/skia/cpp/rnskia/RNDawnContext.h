@@ -780,10 +780,12 @@ private:
     _pendingReadbacks.fetch_add(1, std::memory_order_acq_rel);
     backendContext.fQueue.OnSubmittedWorkDone(
         wgpu::CallbackMode::AllowSpontaneous,
-        [](wgpu::QueueWorkDoneStatus, wgpu::StringView) {
+        [](wgpu::QueueWorkDoneStatus status, wgpu::StringView) {
           getInstance()._pendingReadbacks.fetch_sub(1,
                                                     std::memory_order_acq_rel);
-          if (RNSkCompatibilityAttempt::process().noteWorkDone()) {
+          if (RNSkCompatibilityAttempt::process().noteWorkDone(
+                  status == wgpu::QueueWorkDoneStatus::Success &&
+                  !isDeviceLost())) {
             RNSkLogger::logToConsole(
                 "React Native Skia's first work at the WebGPU compatibility "
                 "feature level finished; the attempt is settled.");

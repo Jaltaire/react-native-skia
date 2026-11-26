@@ -292,20 +292,36 @@ public:
     _phase.store(Phase::AwaitingFirstWork, std::memory_order_release);
   }
 
-  /** The GPU finished the watched work. True when that settles the attempt. */
-  bool noteWorkDone() {
+  /**
+   The GPU's report on the watched work: `succeeded` only when it finished
+   and the device was not lost. True when that settles the attempt; a
+   failure leaves it counted.
+   */
+  bool noteWorkDone(bool succeeded) {
     std::lock_guard<std::mutex> lock(_mutex);
     if (phase() != Phase::FirstWork) {
+      return false;
+    }
+    if (!succeeded) {
+      _phase.store(Phase::Finished, std::memory_order_release);
       return false;
     }
     _workDone = true;
     return settleLocked();
   }
 
-  /** The watched window frame was presented. True when that settles it. */
-  bool notePresented() {
+  /**
+   The watched window frame's present: `succeeded` only when it succeeded
+   and the device was not lost. True when that settles the attempt; a
+   failure leaves it counted.
+   */
+  bool notePresented(bool succeeded) {
     std::lock_guard<std::mutex> lock(_mutex);
     if (phase() != Phase::FirstWork) {
+      return false;
+    }
+    if (!succeeded) {
+      _phase.store(Phase::Finished, std::memory_order_release);
       return false;
     }
     _presented = true;

@@ -25,9 +25,11 @@ namespace RNSkia {
 namespace {
 
 // The present of the process's first work on a compatibility device (see
-// RNSkCompatibilityAttempt).
-void notePresentedForCompatibilityGuard() {
-  if (RNSkCompatibilityAttempt::process().notePresented()) {
+// RNSkCompatibilityAttempt): settled only when it succeeded on a device that
+// was not lost.
+void notePresentedForCompatibilityGuard(wgpu::Status status) {
+  if (RNSkCompatibilityAttempt::process().notePresented(
+          status == wgpu::Status::Success && !DawnContext::isDeviceLost())) {
     RNSkLogger::logToConsole(
         "React Native Skia presented its first frame at the WebGPU "
         "compatibility feature level; the attempt is settled.");
@@ -268,9 +270,9 @@ bool RNSkWindowSurface::presentRecordings(
 #ifdef __APPLE__
   dawn::native::metal::WaitForCommandsToBeScheduled(_device.Get());
 #endif
-  _surface.Present();
+  const auto presented = _surface.Present();
   if (firstWork) {
-    notePresentedForCompatibilityGuard();
+    notePresentedForCompatibilityGuard(presented);
   }
   return true;
 }
@@ -303,9 +305,9 @@ bool RNSkWindowSurface::presentImage(const sk_sp<SkImage> &image) {
 #ifdef __APPLE__
   dawn::native::metal::WaitForCommandsToBeScheduled(_device.Get());
 #endif
-  _surface.Present();
+  const auto presented = _surface.Present();
   if (firstWork) {
-    notePresentedForCompatibilityGuard();
+    notePresentedForCompatibilityGuard(presented);
   }
   return true;
 }
