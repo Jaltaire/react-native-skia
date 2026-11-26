@@ -50,6 +50,15 @@ describe("React Native Skia's config plugin", () => {
     expect(() => readOptions([false])).toThrow("takes an object of options");
   });
 
+  it("adds the manifest and Info.plist mods with the option", () => {
+    const config = withSkia(
+      { name: "app", slug: "app" },
+      { compatibilityFeatureLevel: false }
+    );
+    expect(typeof config.mods.android.manifest).toBe("function");
+    expect(typeof config.mods.ios.infoPlist).toBe("function");
+  });
+
   it("writes the Android meta-data the library reads", () => {
     const written = applyAndroidCompatibilityFeatureLevel(
       AndroidConfig,

@@ -170,7 +170,10 @@ RNSkCompatibilityConfig RNSkApplePlatformContext::getCompatibilityConfig() {
                              stringByTrimmingCharactersInSet:
                                  [NSCharacterSet whitespaceCharacterSet]]
                        : nil;
-  if ([allowed isKindOfClass:[NSNumber class]]) {
+  // A Boolean, or a number that is 0 or 1; any other number is reported like
+  // any other value.
+  if ([allowed isKindOfClass:[NSNumber class]] &&
+      ([allowed isEqual:@0] || [allowed isEqual:@1])) {
     config.allowed = [allowed boolValue];
   } else if ([text isEqualToString:@"true"] ||
              [text isEqualToString:@"false"]) {

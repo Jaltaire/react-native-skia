@@ -62,16 +62,23 @@ function applyIosCompatibilityFeatureLevel(infoPlist, allowed) {
   return infoPlist;
 }
 
+// The config plugin helpers: Expo's own re-export, which an app has, and the
+// package itself where expo is not installed (this repository's tests).
+function configPlugins() {
+  try {
+    return require("expo/config-plugins");
+  } catch (error) {
+    return require("@expo/config-plugins");
+  }
+}
+
 function withSkia(config, options) {
   const { compatibilityFeatureLevel } = readOptions(options);
   if (compatibilityFeatureLevel === undefined) {
     return config;
   }
-  const {
-    AndroidConfig,
-    withAndroidManifest,
-    withInfoPlist,
-  } = require("@expo/config-plugins");
+  const { AndroidConfig, withAndroidManifest, withInfoPlist } =
+    configPlugins();
   config = withAndroidManifest(config, (modConfig) => {
     applyAndroidCompatibilityFeatureLevel(
       AndroidConfig,
