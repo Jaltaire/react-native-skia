@@ -66,7 +66,8 @@ public:
     /**
      The WebGPU feature level the device runs at: "core", or
      "compatibility" on a device without a core adapter (see
-     RNSkFeatureLevel); empty when unavailable.
+     RNSkFeatureLevel); empty when no device was created, and kept after
+     the device is lost.
      */
     std::string featureLevel;
     /** Why the GPU is unavailable; empty when it is. */

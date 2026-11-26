@@ -65,6 +65,7 @@ This does not affect the emulator (use an API 29 or later image with hardware gr
 
 Skia asks Dawn for a Vulkan adapter at the WebGPU core feature level first.
 On a device whose driver falls short of a core requirement but meets the compatibility ones (for example, a 2D texture limit of 4096, as on PowerVR GE8300, GE8320, and GE8322 GPUs), it renders at the compatibility level instead, and `Skia.gpu.featureLevel` is `"compatibility"`.
+The device `Skia.getNativeDevice()` hands to react-native-webgpu is then a compatibility device too: WebGPU code that uses a core-only feature (such as cube array textures or per-attachment blend state) must check `Skia.gpu.featureLevel` first, because release builds skip Dawn's validation and such a call reaches the driver unchecked.
 
 On a device without Vulkan the app still runs: `Skia.gpu.isAvailable` is false, `Skia.gpu.error` says why, and canvases stay blank.
 An app that has to render on such devices uses [v2](https://wcandillon.github.io/react-native-skia/v2/docs/getting-started/installation/), which renders with OpenGL ES.

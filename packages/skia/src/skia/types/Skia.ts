@@ -65,7 +65,8 @@ export interface SkGpuInfo {
    * "compatibility" on a device whose driver falls short of a WebGPU core
    * requirement but meets the compatibility ones (Skia asks for core first
    * and for compatibility only when the device has no core adapter); empty
-   * when unavailable.
+   * on web and when no device was created. It keeps its value after the
+   * device is lost.
    */
   readonly featureLevel: "core" | "compatibility" | "";
   /** Why the GPU is unavailable; null when it is. */
