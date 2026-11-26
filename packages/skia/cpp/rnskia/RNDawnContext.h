@@ -740,6 +740,20 @@ private:
     // Compiling pipelines exercises the driver, so on a compatibility device
     // the precompile is one of the windows its attempt is counted in.
     const bool counted = RNSkCompatibilityAttempt::process().beginPrecompile();
+    try {
+      startPrecompileThread(std::move(keys), counted);
+    } catch (const std::exception &e) {
+      RNSkLogger::logToConsole(
+          "The pipeline precompile could not start a thread: %s", e.what());
+      if (counted) {
+        RNSkCompatibilityAttempt::process().endPrecompile();
+      }
+    }
+  }
+
+  void startPrecompileThread(
+      std::vector<sk_sp<SkData>> keys,
+      bool counted) {
     _precompileThread = std::thread([this, keys = std::move(keys), counted]() {
 #if defined(__APPLE__)
       pthread_setname_np("RNSkia Precompile");
