@@ -86,15 +86,20 @@ enum class Ending {
   FinishesWindowFrame,
   // The first work is offscreen, finished.
   FinishesOffscreen,
+  // The process ends inside the pipeline precompile, before any work.
+  InPrecompile,
 };
 
 /**
  One launch in a process of its own, through the attempt's shipped sequence:
- the guard decides, the creation window opens and closes, and the first-work
- window opens and closes, unless the launch ends inside one. Returns the plan.
+ the guard decides, the creation window opens, the precompile starts in it
+ when `precompiles` (as when pipelines were stored by an earlier launch), the
+ creation window closes, the precompile ends, and the first-work window opens
+ and closes, unless the launch ends inside one. Returns the plan.
  */
 RNSkCompatibilityPlan launch(const RNSkCompatibilityGuardFile &file,
-                             const std::string &appVersion, Ending ending) {
+                             const std::string &appVersion, Ending ending,
+                             bool precompiles = false) {
   RNSkCompatibilityConfig config;
   config.guardDirectory = file.directory();
   config.appVersion = appVersion;
@@ -116,7 +121,16 @@ RNSkCompatibilityPlan launch(const RNSkCompatibilityGuardFile &file,
     attempt.endCreation(false);
     return decision.plan;
   }
+  const bool counted =
+      (precompiles || ending == Ending::InPrecompile) &&
+      attempt.beginPrecompile();
+  if (ending == Ending::InPrecompile) {
+    return decision.plan;
+  }
   attempt.endCreation(true);
+  if (counted) {
+    attempt.endPrecompile();
+  }
   if (ending == Ending::NeverDraws) {
     return decision.plan;
   }
@@ -658,6 +672,204 @@ void aStaleTemporaryFileIsIgnored() {
   expect(recorded(file) == 1, "a later write does not trip over it");
 }
 
+void twoCrashesInThePrecompileStopTheLevel() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  launch(file, "1.0 (1)", Ending::InPrecompile);
+  expect(recorded(file) == 1,
+         "a launch that ends inside the pipeline precompile counts once");
+  launch(file, "1.0 (1)", Ending::InPrecompile);
+  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::StopUnfinished,
+         "two in a row stop the level");
+}
+
+void aPrecompileBeforeAnyWorkPutsTheCountBack() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int i = 0; i < 3; i++) {
+    launch(file, "1.0 (1)", Ending::NeverDraws, /* precompiles= */ true);
+  }
+  expect(!file.read().has_value(),
+         "three launches whose precompile ends before they draw leave no "
+         "record");
+  launch(file, "1.0 (1)", Ending::InFirstWork, true);
+  launch(file, "1.0 (1)", Ending::NeverDraws, true);
+  expect(recorded(file) == 1, "and one keeps the count it found");
+  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame, true) ==
+             RNSkCompatibilityPlan::Attempt,
+         "a launch that precompiles and finishes its first work tries the "
+         "level");
+  expect(!file.read().has_value(), "and settles it");
+}
+
+void thePrecompileKeepsTheCountThroughTheCreationWindow() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  RNSkCompatibilityAttempt attempt;
+  attempt.beginCreation(file, decision.record);
+  expect(attempt.beginPrecompile(),
+         "a precompile started in the creation window is counted");
+  attempt.endCreation(true);
+  expect(recorded(file) == 1,
+         "closing the creation window keeps the count while it runs");
+  expect(!attempt.endPrecompile(), "its end settles nothing on its own");
+  expect(!file.read().has_value(), "and puts the count back");
+}
+
+void aFirstWorkFinishedDuringThePrecompileSettlesWhenItEnds() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  RNSkCompatibilityAttempt attempt;
+  attempt.beginCreation(file, decision.record);
+  attempt.beginPrecompile();
+  attempt.endCreation(true);
+  expect(attempt.beginFirstWork(true),
+         "the first work is watched while the precompile runs");
+  expect(recorded(file) == 1, "and the count is not raised twice");
+  attempt.noteWorkDone(true);
+  expect(!attempt.notePresented(true),
+         "a first work that finishes while the precompile runs does not "
+         "settle the attempt");
+  expect(attempt.phase() ==
+             RNSkCompatibilityAttempt::Phase::FirstWorkFinished,
+         "it waits for the precompile");
+  expect(recorded(file) == 1, "which stays counted");
+  expect(attempt.endPrecompile(), "the precompile's end settles it");
+  expect(!file.read().has_value(), "and removes the record");
+  expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Finished,
+         "the attempt is finished");
+}
+
+void aCrashInThePrecompileAfterTheFirstWorkCounts() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int launchNumber = 0; launchNumber < 2; launchNumber++) {
+    auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+    RNSkCompatibilityAttempt attempt;
+    attempt.beginCreation(file, decision.record);
+    attempt.endCreation(true);
+    attempt.beginFirstWork(false);
+    expect(attempt.beginPrecompile(),
+           "a precompile that starts during the first work is counted");
+    attempt.noteWorkDone(true);
+  }
+  expect(decideCompatibilityAttempt(file.read(), "1.0 (1)", true).plan ==
+             RNSkCompatibilityPlan::StopUnfinished,
+         "two launches that end inside the precompile after their first work "
+         "finished stop the level");
+}
+
+void aRejectedBatchKeepsTheCountWhileThePrecompileRuns() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  RNSkCompatibilityAttempt attempt;
+  attempt.beginCreation(file, decision.record);
+  attempt.endCreation(true);
+  expect(!file.read().has_value(), "a created device puts the count back");
+  expect(attempt.beginPrecompile(),
+         "a precompile that starts after the creation window counts again");
+  expect(recorded(file) == 1, "and records it");
+  attempt.beginFirstWork(true);
+  attempt.cancelFirstWork();
+  expect(recorded(file) == 1,
+         "a submission that carried no work keeps the count while the "
+         "precompile runs");
+  attempt.endPrecompile();
+  expect(!file.read().has_value(), "and the precompile's end puts it back");
+}
+
+void aFailedFirstWorkDuringThePrecompileStaysCounted() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  RNSkCompatibilityAttempt attempt;
+  attempt.beginCreation(file, decision.record);
+  attempt.beginPrecompile();
+  attempt.endCreation(true);
+  attempt.beginFirstWork(false);
+  attempt.noteWorkDone(false);
+  expect(!attempt.endPrecompile(),
+         "a precompile that ends after a failed first work settles nothing");
+  expect(recorded(file) == 1, "the attempt stays counted");
+}
+
+void onlyTheFirstPrecompileIsCounted() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  RNSkCompatibilityAttempt attempt;
+  attempt.beginCreation(file, decision.record);
+  expect(attempt.beginPrecompile(), "the first precompile is counted");
+  expect(!attempt.beginPrecompile(), "a second one is not");
+  attempt.endCreation(true);
+  attempt.endPrecompile();
+  expect(!attempt.beginPrecompile(),
+         "nor one on a device that replaces a lost one");
+  expect(!attempt.endPrecompile(), "and an end without a begin does nothing");
+  attempt.beginFirstWork(false);
+  attempt.noteWorkDone(true);
+  expect(!attempt.beginPrecompile(),
+         "a precompile after the attempt settled is not counted");
+}
+
+void aPrecompileThatCannotRecordStopsWatching() {
+  if (::geteuid() == 0) {
+    std::printf("skipped: a precompile that cannot record (root ignores "
+                "directory permissions)\n");
+    return;
+  }
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  RNSkCompatibilityAttempt attempt;
+  attempt.beginCreation(file, decision.record);
+  attempt.endCreation(true);
+  ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
+  expect(!attempt.beginPrecompile(),
+         "a precompile whose count cannot be written is not watched");
+  ::chmod(directory.path.c_str(), S_IRWXU);
+  expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Finished,
+         "and the attempt stops watching anything");
+  expect(!file.read().has_value(), "leaving no record");
+}
+
+void exactlyOneOfThePrecompileAndTheWorkSettles() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int round = 0; round < 200; round++) {
+    auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+    RNSkCompatibilityAttempt attempt;
+    attempt.beginCreation(file, decision.record);
+    attempt.beginPrecompile();
+    attempt.endCreation(true);
+    attempt.beginFirstWork(false);
+    std::atomic<int> settled{0};
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < 8; thread++) {
+      threads.emplace_back([&attempt, &settled, thread]() {
+        const bool settles = thread == 0 ? attempt.endPrecompile()
+                                         : attempt.noteWorkDone(true);
+        if (settles) {
+          settled.fetch_add(1);
+        }
+      });
+    }
+    for (auto &thread : threads) {
+      thread.join();
+    }
+    if (settled.load() != 1) {
+      expect(false, "exactly one of the precompile's end and seven reports "
+                    "of the first work settles the attempt");
+      return;
+    }
+  }
+  expect(!file.read().has_value(), "and the record is removed");
+}
+
 void anUnusedAttemptWatchesNothing() {
   RNSkCompatibilityAttempt attempt;
   expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Unused,
@@ -665,6 +877,8 @@ void anUnusedAttemptWatchesNothing() {
   expect(!attempt.beginFirstWork(true) && !attempt.noteWorkDone(true) &&
              !attempt.notePresented(true),
          "and watches no submission");
+  expect(!attempt.beginPrecompile() && !attempt.endPrecompile(),
+         "nor any precompile");
 }
 
 } // namespace
@@ -697,6 +911,16 @@ int main() {
   aCorePhoneNeverResolvesTheConfiguration();
   exactlyOneThreadSettlesTheFirstWork();
   aStaleTemporaryFileIsIgnored();
+  twoCrashesInThePrecompileStopTheLevel();
+  aPrecompileBeforeAnyWorkPutsTheCountBack();
+  thePrecompileKeepsTheCountThroughTheCreationWindow();
+  aFirstWorkFinishedDuringThePrecompileSettlesWhenItEnds();
+  aCrashInThePrecompileAfterTheFirstWorkCounts();
+  aRejectedBatchKeepsTheCountWhileThePrecompileRuns();
+  aFailedFirstWorkDuringThePrecompileStaysCounted();
+  onlyTheFirstPrecompileIsCounted();
+  aPrecompileThatCannotRecordStopsWatching();
+  exactlyOneOfThePrecompileAndTheWorkSettles();
   anUnusedAttemptWatchesNothing();
   if (failures > 0) {
     std::fprintf(stderr, "%d expectation(s) failed\n", failures);

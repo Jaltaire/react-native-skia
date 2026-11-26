@@ -87,8 +87,8 @@ At run time, a value Skia cannot read as true or false (`"0"`, `"off"`) is logge
 `Skia.gpu.error` then says that the level is turned off in the app's build settings.
 
 A driver can still fail on that level in a way no app can catch, such as a crash or a hang inside the driver.
-Skia therefore counts an attempt at the compatibility level while the driver is exercised for the first time in a process: while the device and its Graphite context are created, and while the first work submitted to the device runs (until a window frame is presented, or until the GPU reports offscreen work finished).
-It keeps the count in a directory of the app's that is kept out of backups, and removes it once that first work is finished.
+Skia therefore counts an attempt at the compatibility level while the driver is exercised for the first time in a process: while the device and its Graphite context are created, while it compiles again, on a thread of its own, the pipelines an earlier launch used, and while the first work submitted to the device runs (until a window frame is presented, or until the GPU reports offscreen work finished).
+It keeps the count in a directory of the app's that is kept out of backups, and removes it once that first work is finished and those pipelines are compiled.
 If two launches in a row on the same app version end inside those windows, Skia stops trying the level on that version: the device renders as it did before the level existed (`Skia.gpu.isAvailable` false, blank canvases), and `Skia.gpu.error` says why.
 The next app version tries the level again.
 The first work counts as finished only when its present succeeded and the GPU reported it done on a device that was not lost.

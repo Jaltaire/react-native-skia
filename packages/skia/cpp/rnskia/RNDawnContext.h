@@ -726,7 +726,10 @@ private:
           keys.size());
       return;
     }
-    _precompileThread = std::thread([this, keys = std::move(keys)]() {
+    // Compiling pipelines exercises the driver, so on a compatibility device
+    // the precompile is one of the windows its attempt is counted in.
+    const bool counted = RNSkCompatibilityAttempt::process().beginPrecompile();
+    _precompileThread = std::thread([this, keys = std::move(keys), counted]() {
 #if defined(__APPLE__)
       pthread_setname_np("RNSkia Precompile");
 #elif defined(__ANDROID__)
@@ -751,6 +754,12 @@ private:
       RNSkLogger::logToConsole(
           "PIPELINE PRECOMPILE: %zu compiled | %zu rejected | %zu cached",
           compiled, rejected, keys.size());
+      if (counted && RNSkCompatibilityAttempt::process().endPrecompile()) {
+        RNSkLogger::logToConsole(
+            "React Native Skia's pipeline precompile at the WebGPU "
+            "compatibility feature level ended after its first work finished; "
+            "the attempt is settled.");
+      }
     });
   }
 
@@ -894,11 +903,13 @@ private:
           "React Native Skia could not create its Graphite context on the "
           "GPU device.");
     }
-    RNSkCompatibilityAttempt::process().endCreation(true);
-
+    // Before the creation window closes: on a compatibility device the
+    // precompile is counted from the creation window on (see
+    // RNSkCompatibilityAttempt), so that no driver work runs uncounted.
     if (_pipelineStorage != nullptr) {
       startPrecompiling();
     }
+    RNSkCompatibilityAttempt::process().endCreation(true);
   }
 
   ~DawnContext() {

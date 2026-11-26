@@ -236,18 +236,22 @@ private:
 
 /**
  The process's attempt at the compatibility level, counted only while the
- driver is exercised for the first time, in two windows:
+ driver is exercised for the first time, in three windows:
  - creation: from just before the device is requested until its Graphite
    context exists;
+ - precompile: from just before the process's first device starts compiling
+   pipelines on a thread of its own (a precompile, or a warmup) until that
+   thread is done;
  - first work: from just before the first work is submitted to the device
    (a window frame, an offscreen surface, or a readback) until that work is
    known finished (a window frame's present, and the GPU's report that the
    work is done).
- Each window records one more unfinished attempt than the process found, and
- puts the record back when it closes; a finished first work removes it. A
- process that never draws neither counts nor resets. A process that never
- begins (every device with a core adapter) only reads one atomic value per
- submission.
+ The windows may overlap. While any is open the record holds one more
+ unfinished attempt than the process found; once the last one closes the
+ count is put back. A finished first work removes the record, once no
+ precompile is running any more. A process that never draws neither counts
+ nor resets. A process that never begins (every device with a core adapter)
+ only reads one atomic value per submission and per precompile.
  */
 class RNSkCompatibilityAttempt {
 public:
@@ -256,6 +260,9 @@ public:
     Creating,
     AwaitingFirstWork,
     FirstWork,
+    // The first work finished; the attempt settles once the precompile that
+    // is still running ends.
+    FirstWorkFinished,
     Finished,
   };
 
@@ -296,9 +303,68 @@ public:
     if (phase() != Phase::Creating) {
       return;
     }
-    restoreLocked();
-    _phase.store(created ? Phase::AwaitingFirstWork : Phase::Finished,
-                 std::memory_order_release);
+    if (!created) {
+      restoreLocked();
+      _phase.store(Phase::Finished, std::memory_order_release);
+      return;
+    }
+    _phase.store(Phase::AwaitingFirstWork, std::memory_order_release);
+    if (!_precompiling) {
+      restoreLocked();
+    }
+  }
+
+  /**
+   Opens the precompile window before the process's first device starts
+   compiling pipelines on a thread of its own, from the creation window on.
+   True when this precompile is the one counted, and then endPrecompile()
+   must follow once its thread is done; any other (a second one, one on a
+   device that replaces a lost one, or one on a device with a core adapter)
+   is not.
+   */
+  bool beginPrecompile() {
+    const auto current = phase();
+    if (current != Phase::Creating && current != Phase::AwaitingFirstWork &&
+        current != Phase::FirstWork) {
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_precompileBegun || (phase() != Phase::Creating &&
+                             phase() != Phase::AwaitingFirstWork &&
+                             phase() != Phase::FirstWork)) {
+      return false;
+    }
+    if (phase() == Phase::AwaitingFirstWork && !_file->write(_counted)) {
+      _file->remove();
+      _phase.store(Phase::Finished, std::memory_order_release);
+      return false;
+    }
+    _precompileBegun = true;
+    _precompiling = true;
+    return true;
+  }
+
+  /**
+   Closes the precompile window: its thread is done, whether it compiled
+   every pipeline or stopped early. True when that settles the attempt (its
+   first work had already finished).
+   */
+  bool endPrecompile() {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (!_precompiling) {
+      return false;
+    }
+    _precompiling = false;
+    if (phase() == Phase::AwaitingFirstWork) {
+      restoreLocked();
+      return false;
+    }
+    if (phase() == Phase::FirstWorkFinished) {
+      _file->remove();
+      _phase.store(Phase::Finished, std::memory_order_release);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -314,7 +380,7 @@ public:
     if (phase() != Phase::AwaitingFirstWork) {
       return false;
     }
-    if (!_file->write(_counted)) {
+    if (!_precompiling && !_file->write(_counted)) {
       _file->remove();
       _phase.store(Phase::Finished, std::memory_order_release);
       return false;
@@ -328,14 +394,17 @@ public:
 
   /**
    The watched submission carried no work after all (every recording was
-   rejected): the record is put back, and the next submission is watched.
+   rejected): the count is put back unless a precompile is running, and the
+   next submission is watched.
    */
   void cancelFirstWork() {
     std::lock_guard<std::mutex> lock(_mutex);
     if (phase() != Phase::FirstWork) {
       return;
     }
-    restoreLocked();
+    if (!_precompiling) {
+      restoreLocked();
+    }
     _phase.store(Phase::AwaitingFirstWork, std::memory_order_release);
   }
 
@@ -389,6 +458,10 @@ private:
     if (!_workDone || (_presents && !_presented)) {
       return false;
     }
+    if (_precompiling) {
+      _phase.store(Phase::FirstWorkFinished, std::memory_order_release);
+      return false;
+    }
     _file->remove();
     _phase.store(Phase::Finished, std::memory_order_release);
     return true;
@@ -401,6 +474,8 @@ private:
   bool _presents = false;
   bool _workDone = false;
   bool _presented = false;
+  bool _precompileBegun = false;
+  bool _precompiling = false;
 };
 
 /**
