@@ -590,6 +590,7 @@ createDawnBackendContext(dawn::native::Instance *instance,
   wgpu::Device device = requestDevice(matchedAdapter, matched.featureLevel,
                                       features, listener, pipelineStorage);
   if (!device) {
+    attempt.endCreation(false);
     std::string error =
         "React Native Skia could not create a GPU device on the " +
         adapterInfo.backend + " adapter " + adapterInfo.device + " (" +

@@ -889,6 +889,7 @@ private:
         skgpu::graphite::ContextFactory::MakeDawn(backendContext, ctxOptions);
 
     if (!fGraphiteContext) {
+      RNSkCompatibilityAttempt::process().endCreation(false);
       throw std::runtime_error(
           "React Native Skia could not create its Graphite context on the "
           "GPU device.");

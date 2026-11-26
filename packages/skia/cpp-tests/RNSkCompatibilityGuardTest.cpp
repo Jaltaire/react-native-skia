@@ -55,6 +55,8 @@ struct Directory {
 enum class Ending {
   // The process ends inside the device's creation (a driver crash or hang).
   InCreation,
+  // The device or its context cannot be created, and Dawn says why.
+  FailsCleanly,
   // The device and its context are created, and nothing is ever submitted.
   NeverDraws,
   // The process ends inside its first work on the device.
@@ -82,6 +84,10 @@ RNSkCompatibilityPlan launch(const RNSkCompatibilityGuardFile &file,
     return RNSkCompatibilityPlan::StopUnrecorded;
   }
   if (ending == Ending::InCreation) {
+    return decision.plan;
+  }
+  if (ending == Ending::FailsCleanly) {
+    attempt.endCreation(false);
     return decision.plan;
   }
   attempt.endCreation(true);
@@ -325,6 +331,42 @@ void aWindowFrameNeedsItsPresentToo() {
   expect(!attempt.beginFirstWork(false), "later work is not watched");
 }
 
+void aCleanCreationFailureDoesNotCount() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int i = 0; i < 3; i++) {
+    expect(launch(file, "1.0 (1)", Ending::FailsCleanly) ==
+               RNSkCompatibilityPlan::Attempt,
+           "a device that cannot be created is tried at every launch, so "
+           "Skia.gpu.error keeps Dawn's reason");
+  }
+  expect(!file.read().has_value(), "and leaves no record");
+  launch(file, "1.0 (1)", Ending::InCreation);
+  launch(file, "1.0 (1)", Ending::FailsCleanly);
+  expect(recorded(file) == 1,
+         "a clean failure keeps the count it found");
+}
+
+void aWriteThatFailsAfterItsRenameLeavesNoRecord() {
+  if (::geteuid() == 0) {
+    std::printf("skipped: a write that fails after its rename (root ignores "
+                "directory permissions)\n");
+    return;
+  }
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  ::chmod(directory.path.c_str(), S_IWUSR | S_IXUSR);
+  RNSkCompatibilityAttempt attempt;
+  expect(!attempt.beginCreation(file, decision.record),
+         "a record renamed into place whose directory cannot be flushed is "
+         "not trusted: the level is not tried");
+  ::chmod(directory.path.c_str(), S_IRWXU);
+  expect(!file.read().has_value(),
+         "and the record it left is removed, so no attempt is counted for a "
+         "launch that made none");
+}
+
 void aFailedFirstWorkStaysCounted() {
   Directory directory;
   RNSkCompatibilityGuardFile file(directory.path);
@@ -511,6 +553,8 @@ int main() {
   aProcessThatNeverDrawsNeitherCountsNorResets();
   offscreenFirstWorkSettlesWithoutAPresent();
   aWindowFrameNeedsItsPresentToo();
+  aCleanCreationFailureDoesNotCount();
+  aWriteThatFailsAfterItsRenameLeavesNoRecord();
   aFailedFirstWorkStaysCounted();
   aBatchWithNoWorkIsNotTheFirstWork();
   aSuccessResetsTheCount();

@@ -243,6 +243,7 @@ public:
     _file = file;
     _counted = counted;
     if (!_file->write(_counted)) {
+      _file->remove();
       _phase.store(Phase::Finished, std::memory_order_release);
       return false;
     }
@@ -250,7 +251,10 @@ public:
     return true;
   }
 
-  /** Closes the creation window: the device and its context exist, or not. */
+  /**
+   Closes the creation window: the device and its context exist, or their
+   creation failed cleanly (an error, not a crash), which does not count.
+   */
   void endCreation(bool created) {
     std::lock_guard<std::mutex> lock(_mutex);
     if (phase() != Phase::Creating) {
@@ -275,6 +279,7 @@ public:
       return false;
     }
     if (!_file->write(_counted)) {
+      _file->remove();
       _phase.store(Phase::Finished, std::memory_order_release);
       return false;
     }
