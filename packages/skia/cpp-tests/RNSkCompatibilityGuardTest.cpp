@@ -75,7 +75,7 @@ enum class Ending {
 RNSkCompatibilityPlan launch(const RNSkCompatibilityGuardFile &file,
                              const std::string &appVersion, Ending ending) {
   auto decision =
-      decideCompatibilityAttempt(file.read(), appVersion, file.usable());
+      decideCompatibilityAttempt(file.read(), appVersion, file.readable());
   if (decision.plan != RNSkCompatibilityPlan::Attempt) {
     return decision.plan;
   }
@@ -195,18 +195,75 @@ void theRefusalSaysWhatWasFoundWhyAndWhen() {
 }
 
 void recordRoundTripsAndRejectsOtherText() {
-  auto parsed = parseCompatibilityAttempts("2.4.1 (263300659)\n2\n");
-  expect(parsed && parsed->appVersion == "2.4.1 (263300659)" &&
+  auto parsed = parseCompatibilityAttempts("2\n9.9.9 (99)");
+  expect(parsed && parsed->appVersion == "9.9.9 (99)" &&
              parsed->unfinished == 2,
          "a record reads back as written");
+  expect(parseCompatibilityAttempts("0\nv") &&
+             parseCompatibilityAttempts("0\nv")->unfinished == 0,
+         "a count of 0 reads back");
+  expect(parseCompatibilityAttempts("1000\nv") &&
+             parseCompatibilityAttempts("1000\nv")->unfinished == 1000,
+         "a count of 1000 reads back");
   expect(!parseCompatibilityAttempts("").has_value(),
          "an empty file is no record");
-  expect(!parseCompatibilityAttempts("1.0\n").has_value(),
-         "a record without a count is no record");
-  expect(!parseCompatibilityAttempts("1.0\ntwo\n").has_value(),
-         "a record with a count that is not a number is no record");
-  expect(!parseCompatibilityAttempts("1.0\n2\nmore\n").has_value(),
-         "a record with more lines is no record");
+  expect(!parseCompatibilityAttempts("2").has_value(),
+         "a count without a line break is no record");
+  expect(!parseCompatibilityAttempts("002\nv").has_value(),
+         "a count with a leading zero is no record");
+  expect(!parseCompatibilityAttempts("-1\nv").has_value(),
+         "a negative count is no record");
+  expect(!parseCompatibilityAttempts("2\r\nv").has_value(),
+         "a count followed by a carriage return is no record");
+  expect(!parseCompatibilityAttempts("two\nv").has_value(),
+         "a count that is not a number is no record");
+  expect(!parseCompatibilityAttempts("1234567890\nv").has_value(),
+         "a count of more than nine digits is no record");
+}
+
+void anyVersionStringReadsBackWhole() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  const std::string longVersion(10000, 'x');
+  std::string otherLong = longVersion;
+  otherLong.back() = 'y';
+  for (const std::string &version :
+       {std::string("9.9.9\n(99)"), std::string(""), longVersion,
+        std::string("9.9.9 (99)\r\n")}) {
+    expect(file.write({version, 1}), "a record with any version is written");
+    auto read = file.read();
+    expect(read && read->appVersion == version && read->unfinished == 1,
+           "and reads back whole: a line break, an empty version, 10,000 "
+           "characters, a trailing carriage return");
+    launch(file, version, Ending::InCreation);
+    expect(launch(file, version, Ending::FinishesWindowFrame) ==
+               RNSkCompatibilityPlan::StopUnfinished,
+           "so two unfinished launches stop the level with that version too");
+    file.remove();
+  }
+  file.write({longVersion, 2});
+  expect(decideCompatibilityAttempt(file.read(), otherLong, true).plan ==
+             RNSkCompatibilityPlan::Attempt,
+         "two 10,000-character versions that differ in their last character "
+         "are two versions");
+  file.remove();
+}
+
+void anUnreadableRecordStopsTheLevel() {
+  if (::geteuid() == 0) {
+    std::printf("skipped: an unreadable record (root ignores file "
+                "permissions)\n");
+    return;
+  }
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  file.write({"9.9.9 (99)", 1});
+  ::chmod(file.path().c_str(), 0);
+  expect(!file.readable(), "a record that exists and cannot be read is seen");
+  expect(launch(file, "9.9.9 (99)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::StopUnrecorded,
+         "and the level is not tried, rather than counting from zero");
+  ::chmod(file.path().c_str(), S_IRUSR | S_IWUSR);
 }
 
 void fileWritesReadsAndRemoves() {
@@ -545,6 +602,8 @@ int main() {
   ruleStopsWhenNothingCanBeRecorded();
   theRefusalSaysWhatWasFoundWhyAndWhen();
   recordRoundTripsAndRejectsOtherText();
+  anyVersionStringReadsBackWhole();
+  anUnreadableRecordStopsTheLevel();
   fileWritesReadsAndRemoves();
   fileFailsCleanlyWhereItCannotWrite();
   twoCrashesInCreationStopTheLevel();

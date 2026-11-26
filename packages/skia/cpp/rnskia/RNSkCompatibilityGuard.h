@@ -93,29 +93,32 @@ inline std::string compatibilityStopReason(RNSkCompatibilityPlan plan,
   return "";
 }
 
+/**
+ The record's text: the count on the first line, then the app version as
+ the rest of the file, byte for byte, so that any version string (with line
+ breaks, empty, or of any length) reads back whole.
+ */
 inline std::string
 formatCompatibilityAttempts(const RNSkCompatibilityAttempts &attempts) {
-  return attempts.appVersion + "\n" + std::to_string(attempts.unfinished) +
-         "\n";
+  return std::to_string(attempts.unfinished) + "\n" + attempts.appVersion;
 }
 
-/** The record from its file's text; nullopt when the text is not one. */
+/**
+ The record from its file's text; nullopt when the text is not one. The count
+ is a plain decimal of at most nine digits, without a sign or a leading zero.
+ */
 inline std::optional<RNSkCompatibilityAttempts>
 parseCompatibilityAttempts(const std::string &text) {
-  const auto versionEnd = text.find('\n');
-  if (versionEnd == std::string::npos) {
+  const auto countEnd = text.find('\n');
+  if (countEnd == std::string::npos || countEnd == 0 || countEnd > 9) {
     return std::nullopt;
   }
-  const auto countEnd = text.find('\n', versionEnd + 1);
-  if (countEnd == std::string::npos || countEnd + 1 != text.size()) {
+  const auto count = text.substr(0, countEnd);
+  if (count.find_first_not_of("0123456789") != std::string::npos ||
+      (count.size() > 1 && count[0] == '0')) {
     return std::nullopt;
   }
-  const auto count = text.substr(versionEnd + 1, countEnd - versionEnd - 1);
-  if (count.empty() || count.size() > 3 ||
-      count.find_first_not_of("0123456789") != std::string::npos) {
-    return std::nullopt;
-  }
-  return RNSkCompatibilityAttempts{text.substr(0, versionEnd),
+  return RNSkCompatibilityAttempts{text.substr(countEnd + 1),
                                    std::stoi(count)};
 }
 
@@ -136,7 +139,10 @@ public:
     return _directory + "/rnskia-compatibility-attempts";
   }
 
-  /** The record, or nullopt when there is none or it is not one. */
+  /**
+   The record, read whole, or nullopt when there is none or it is not one
+   (see readable for a record that exists and cannot be read).
+   */
   std::optional<RNSkCompatibilityAttempts> read() const {
     if (!usable()) {
       return std::nullopt;
@@ -146,14 +152,34 @@ public:
       return std::nullopt;
     }
     std::string text;
-    char buffer[256];
+    char buffer[4096];
     size_t count = 0;
-    while ((count = std::fread(buffer, 1, sizeof(buffer), file)) > 0 &&
-           text.size() < 1024) {
+    while ((count = std::fread(buffer, 1, sizeof(buffer), file)) > 0) {
       text.append(buffer, count);
     }
+    const bool failed = std::ferror(file) != 0;
     std::fclose(file);
+    if (failed) {
+      return std::nullopt;
+    }
     return parseCompatibilityAttempts(text);
+  }
+
+  /**
+   Whether the record can be read: there is none, or it opens. A record that
+   exists and cannot be read could hide unfinished attempts, so the guard
+   then does not let the level be tried.
+   */
+  bool readable() const {
+    if (!usable()) {
+      return false;
+    }
+    const int fd = ::open(path().c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+      return errno == ENOENT;
+    }
+    ::close(fd);
+    return true;
   }
 
   /** Records `attempts` durably; false when any step fails. */
@@ -401,8 +427,9 @@ consultCompatibilityGuard(const RNSkCompatibilityAttempt &attempt,
     return std::nullopt;
   }
   state.file.emplace(config.guardDirectory);
-  state.decision = decideCompatibilityAttempt(
-      state.file->read(), config.appVersion, state.file->usable());
+  state.decision =
+      decideCompatibilityAttempt(state.file->read(), config.appVersion,
+                                 state.file->readable());
   if (state.decision->plan != RNSkCompatibilityPlan::Attempt) {
     return compatibilityStopReason(state.decision->plan, config.appVersion);
   }
