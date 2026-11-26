@@ -196,8 +196,6 @@ public:
     auto info = image->imageInfo().makeDimensions(srcRect.size());
     {
       std::lock_guard<std::mutex> lock(_mutex);
-      const bool firstWork =
-          RNSkCompatibilityAttempt::process().beginFirstWork(false);
       _pendingReadbacks.fetch_add(1, std::memory_order_acq_rel);
       fGraphiteContext->asyncRescaleAndReadPixels(
           image.get(), info, srcRect, SkImage::RescaleGamma::kSrc,
@@ -211,9 +209,6 @@ public:
           },
           request);
       fGraphiteContext->submit();
-      if (firstWork) {
-        watchFirstWorkLocked();
-      }
     }
     wakeReadbackPoller();
   }
@@ -318,18 +313,19 @@ public:
 
   // Replays the recordings, in order, onto the target surface (a deferred
   // canvas target) and submits them as one batch. A recording Graphite
-  // rejects is logged and skipped; the others are still submitted.
-  // `presents` says the batch is a window frame its caller presents next.
-  // Returns whether the batch is the process's first work on a
-  // compatibility device (see RNSkCompatibilityAttempt): its caller then
-  // reports the present.
+  // rejects is logged and skipped; the others are still submitted. `work`
+  // says what the batch carries (see RNSkCompatibilityWork). Returns whether
+  // the batch is the work a compatibility attempt watches (see
+  // RNSkCompatibilityAttempt::watch): the caller of a window frame then
+  // reports its present.
   bool
   insertRecordings(const std::vector<skgpu::graphite::Recording *> &recordings,
-                   SkSurface *targetSurface, bool presents = false) {
+                   SkSurface *targetSurface,
+                   RNSkCompatibilityWork work = RNSkCompatibilityWork::Other) {
     bool firstWork = false;
     {
       std::lock_guard<std::mutex> lock(_mutex);
-      firstWork = RNSkCompatibilityAttempt::process().beginFirstWork(presents);
+      firstWork = RNSkCompatibilityAttempt::process().watch(work);
       bool inserted = false;
       for (auto *recording : recordings) {
         skgpu::graphite::InsertRecordingInfo info;
@@ -348,7 +344,7 @@ public:
         }
       }
       if (firstWork && !inserted) {
-        RNSkCompatibilityAttempt::process().cancelFirstWork();
+        RNSkCompatibilityAttempt::process().unwatch();
         firstWork = false;
       }
       fGraphiteContext->submit();
@@ -362,19 +358,20 @@ public:
     return firstWork;
   }
 
+  // Runs a recording on the GPU. `work` as for insertRecordings().
   bool submitRecording(
       skgpu::graphite::Recording *recording,
       skgpu::graphite::SyncToCpu syncToCpu = skgpu::graphite::SyncToCpu::kNo,
-      bool presents = false) {
+      RNSkCompatibilityWork work = RNSkCompatibilityWork::Other) {
     bool firstWork = false;
     {
       std::lock_guard<std::mutex> lock(_mutex);
-      firstWork = RNSkCompatibilityAttempt::process().beginFirstWork(presents);
+      firstWork = RNSkCompatibilityAttempt::process().watch(work);
       skgpu::graphite::InsertRecordingInfo info;
       info.fRecording = recording;
       if (!static_cast<bool>(fGraphiteContext->insertRecording(info)) &&
           firstWork) {
-        RNSkCompatibilityAttempt::process().cancelFirstWork();
+        RNSkCompatibilityAttempt::process().unwatch();
         firstWork = false;
       }
       fGraphiteContext->submit(syncToCpu);
@@ -386,6 +383,19 @@ public:
       wakeReadbackPoller();
     }
     return firstWork;
+  }
+
+  /**
+   Snaps what `recorder` recorded of draws (a window frame, an offscreen
+   surface's drawing, its first clear): Graphite starts compiling the
+   pipelines they need here, before anything is submitted, so on a
+   compatibility device the attempt's first-work window opens first (see
+   RNSkCompatibilityAttempt). A texture upload snaps its recorder directly.
+   */
+  static std::unique_ptr<skgpu::graphite::Recording>
+  snapDraws(skgpu::graphite::Recorder *recorder) {
+    RNSkCompatibilityAttempt::process().openFirstWork();
+    return recorder->snap();
   }
 
   // Create offscreen surface
@@ -549,7 +559,7 @@ public:
     canvas->drawImage(image, 0, 0);
 
     // Flush the surface to ensure the image is rendered
-    auto recording = getRecorder()->snap();
+    auto recording = snapDraws(getRecorder());
     if (recording) {
       submitRecording(recording.get(), skgpu::graphite::SyncToCpu::kYes);
     }
@@ -754,7 +764,8 @@ private:
       RNSkLogger::logToConsole(
           "PIPELINE PRECOMPILE: %zu compiled | %zu rejected | %zu cached",
           compiled, rejected, keys.size());
-      if (counted && RNSkCompatibilityAttempt::process().endPrecompile()) {
+      if (counted && RNSkCompatibilityAttempt::process().endPrecompile(
+                         isDeviceLost())) {
         RNSkLogger::logToConsole(
             "React Native Skia's pipeline precompile at the WebGPU "
             "compatibility feature level ended after its first work finished; "

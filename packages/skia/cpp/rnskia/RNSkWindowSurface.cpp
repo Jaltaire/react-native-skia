@@ -57,6 +57,11 @@ void RNSkWindowSurface::attach(void *nativeHandle, int width, int height,
   }
   _device = context->getWGPUDevice();
   _recorder = context->getRecorder();
+  // Dawn creates the swapchain when the surface is configured (see
+  // configureSurface) and acquires its first image at the first frame, both
+  // before anything is submitted: on a compatibility device the attempt's
+  // first-work window opens here (see RNSkCompatibilityAttempt).
+  RNSkCompatibilityAttempt::process().openFirstWork();
   _surface = context->MakeWGPUSurface(nativeHandle);
   if (!_surface) {
     RNSkLogger::logToConsole("Could not create a surface over the window");
@@ -266,7 +271,7 @@ bool RNSkWindowSurface::presentRecordings(
   // A recording Graphite rejects is logged there and dropped: it would be
   // rejected again on every frame, and the frames behind it would never come.
   const bool firstWork = DawnContext::getInstance().insertRecordings(
-      recordings, surface.get(), /* presents= */ true);
+      recordings, surface.get(), RNSkCompatibilityWork::WindowFrame);
 #ifdef __APPLE__
   dawn::native::metal::WaitForCommandsToBeScheduled(_device.Get());
 #endif
@@ -296,12 +301,13 @@ bool RNSkWindowSurface::presentImage(const sk_sp<SkImage> &image) {
     return false;
   }
   surface->getCanvas()->drawImage(image, 0, 0);
-  auto recording = _recorder->snap();
+  auto recording = DawnContext::snapDraws(_recorder);
   if (!recording) {
     throw std::runtime_error("Failed to create graphite recording");
   }
   const bool firstWork = DawnContext::getInstance().submitRecording(
-      recording.get(), skgpu::graphite::SyncToCpu::kNo, /* presents= */ true);
+      recording.get(), skgpu::graphite::SyncToCpu::kNo,
+      RNSkCompatibilityWork::WindowFrame);
 #ifdef __APPLE__
   dawn::native::metal::WaitForCommandsToBeScheduled(_device.Get());
 #endif

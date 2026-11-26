@@ -75,10 +75,12 @@ public:
     // A raster surface (e.g. Skia.Surface.Make) has no Graphite recorder;
     // only Graphite-backed surfaces need to snap and submit a recording.
     if (auto *recorder = surface->recorder()) {
-      auto recording = recorder->snap();
+      auto recording = DawnContext::snapDraws(recorder);
       DawnContext::getInstance().submitRecording(
-          recording.get(), sync ? skgpu::graphite::SyncToCpu::kYes
-                                : skgpu::graphite::SyncToCpu::kNo);
+          recording.get(),
+          sync ? skgpu::graphite::SyncToCpu::kYes
+               : skgpu::graphite::SyncToCpu::kNo,
+          RNSkCompatibilityWork::OffscreenDraw);
     }
   }
 
@@ -114,8 +116,10 @@ public:
     // A raster surface (e.g. Skia.Surface.Make) has no Graphite recorder; its
     // snapshot is already a valid CPU image, so skip the recording submit.
     if (auto *recorder = surface->recorder()) {
-      auto recording = recorder->snap();
-      DawnContext::getInstance().submitRecording(recording.get());
+      auto recording = DawnContext::snapDraws(recorder);
+      DawnContext::getInstance().submitRecording(
+          recording.get(), skgpu::graphite::SyncToCpu::kNo,
+          RNSkCompatibilityWork::OffscreenDraw);
     }
     if (count > 1 && arguments[1].isObject()) {
       auto jsiImage = getJsiObject<JsiSkImage>(runtime, arguments[1]);

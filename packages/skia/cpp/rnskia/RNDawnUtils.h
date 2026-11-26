@@ -452,7 +452,7 @@ requestDevice(dawn::native::Adapter &nativeAdapter,
 // `resolveCompatibility` gives the app's configuration of the compatibility
 // level, and is called only on a device without a core adapter. On a
 // device without a core adapter, the attempt at that level is counted while
-// its device is created and while its first work runs (see
+// its device is created and while its first frame is drawn (see
 // RNSkCompatibilityAttempt), and the level is not tried after the attempts
 // the guard allows ended inside either.
 inline skgpu::graphite::DawnBackendContext

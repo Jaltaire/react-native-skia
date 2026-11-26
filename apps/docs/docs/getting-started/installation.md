@@ -87,15 +87,22 @@ At run time, a value Skia cannot read as true or false (`"0"`, `"off"`) is logge
 `Skia.gpu.error` then says that the level is turned off in the app's build settings.
 
 A driver can still fail on that level in a way no app can catch, such as a crash or a hang inside the driver.
-Skia therefore counts an attempt at the compatibility level while the driver is exercised for the first time in a process: while the device and its Graphite context are created, while it compiles again, on a thread of its own, the pipelines an earlier launch used, and while the first work submitted to the device runs (until a window frame is presented, or until the GPU reports offscreen work finished).
-It keeps the count in a directory of the app's that is kept out of backups, and removes it once that first work is finished and those pipelines are compiled.
+Skia therefore counts an attempt at the compatibility level while the driver is exercised for the first time in a process:
+- while the device and its Graphite context are created;
+- while it compiles again, on a thread of its own, the pipelines an earlier launch used;
+- and from the first canvas window made (whose swapchain the driver creates) or the first drawing recorded (whose pipelines the driver starts compiling), whichever comes first, until a frame has finished: a window frame submitted, presented on a device that was not lost, and reported done by the GPU, or an offscreen surface's drawing reported done by the GPU.
+
+A texture upload, a readback, or a surface's first clear never finishes that window, and a frame whose drawing was rejected neither finishes it nor counts again.
+It keeps the count in a directory of the app's that is kept out of backups, writes it only when its value changes, and removes it once every counted window has closed after a finished frame.
 If two launches in a row on the same app version end inside those windows, Skia stops trying the level on that version: the device renders as it did before the level existed (`Skia.gpu.isAvailable` false, blank canvases), and `Skia.gpu.error` says why.
 The next app version tries the level again.
-The first work counts as finished only when its present succeeded and the GPU reported it done on a device that was not lost.
-A fault after that first work, on a later frame or a heavier screen, is not caught: the count is removed at every launch that gets that far.
+A fault after that first frame, on a later frame or a heavier screen, is not caught: the count is removed at every launch that gets that far.
+Neither is a fault in a texture upload or a readback made before the first drawing.
 For such a fault, the build setting above is the backstop.
-A launch that never draws (a background start, or one left from a screen without a canvas) neither counts nor resets the count.
-If the count cannot be written, Skia does not try the level.
+A launch that makes no canvas window and records no drawing (a background start) neither counts nor resets the count.
+A launch that makes a canvas window or records a drawing and then ends before its first frame finishes counts, even when the user, not the driver, ended it.
+If the count cannot be written when the device is created, Skia does not try the level; if a later write fails, Skia stops counting for that launch and leaves the count as it was, never below what the launch found.
+A count that cannot be read is replaced by this launch's own, as its app version cannot be known.
 Devices with a core adapter never read or write the count, and never read the app's build setting, directories, or version: Skia reads them only after it found no core adapter.
 If react-native-webgpu asks for the GPU before Skia's module is installed, Skia has none of them yet, and does not try the level in that process.
 

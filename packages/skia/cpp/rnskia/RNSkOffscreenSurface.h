@@ -57,7 +57,10 @@ public:
     // The snapshot is a copy task on the surface's recorder: submitted here,
     // so that the image is complete for whoever draws it next.
     if (auto *recorder = _surface->recorder()) {
-      DawnContext::getInstance().submitRecording(recorder->snap().get());
+      DawnContext::getInstance().submitRecording(
+          DawnContext::snapDraws(recorder).get(),
+          skgpu::graphite::SyncToCpu::kNo,
+          RNSkCompatibilityWork::OffscreenDraw);
     }
     return image;
   }
@@ -84,7 +87,10 @@ public:
     // The snapshot is a copy task on the surface's recorder: submitted here,
     // so that the image is complete for whoever draws it next.
     if (auto *recorder = _surface->recorder()) {
-      DawnContext::getInstance().submitRecording(recorder->snap().get());
+      DawnContext::getInstance().submitRecording(
+          DawnContext::snapDraws(recorder).get(),
+          skgpu::graphite::SyncToCpu::kNo,
+          RNSkCompatibilityWork::OffscreenDraw);
     }
     if (image == nullptr || !_useP3ColorSpace) {
       return image;
@@ -102,7 +108,9 @@ public:
     }
     srgb->getCanvas()->drawImage(image, 0, 0);
     auto converted = srgb->makeImageSnapshot();
-    context.submitRecording(recorder->snap().get());
+    context.submitRecording(DawnContext::snapDraws(recorder).get(),
+                            skgpu::graphite::SyncToCpu::kNo,
+                            RNSkCompatibilityWork::OffscreenDraw);
     return converted;
   }
 
@@ -141,11 +149,15 @@ public:
     // submit it first (the explicit clear makes sure the pass is emitted).
     if (!_cleared) {
       _surface->getCanvas()->clear(SK_ColorTRANSPARENT);
-      DawnContext::getInstance().submitRecording(recorder->snap().get());
+      // The clear is not the surface's drawing: it does not settle a
+      // compatibility attempt (see RNSkCompatibilityWork).
+      DawnContext::getInstance().submitRecording(
+          DawnContext::snapDraws(recorder).get());
       _cleared = true;
     }
     // A rejected recording is logged and dropped (see RNSkWindowSurface).
-    DawnContext::getInstance().insertRecordings(recordings, _surface.get());
+    DawnContext::getInstance().insertRecordings(
+        recordings, _surface.get(), RNSkCompatibilityWork::OffscreenDraw);
     return true;
   }
 

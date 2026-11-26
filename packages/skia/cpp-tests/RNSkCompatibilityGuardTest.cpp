@@ -72,87 +72,6 @@ struct Directory {
   }
 };
 
-/** Where a simulated launch on a device without a core adapter ends. */
-enum class Ending {
-  // The process ends inside the device's creation (a driver crash or hang).
-  InCreation,
-  // The device or its context cannot be created, and Dawn says why.
-  FailsCleanly,
-  // The device and its context are created, and nothing is ever submitted.
-  NeverDraws,
-  // The process ends inside its first work on the device.
-  InFirstWork,
-  // The first work is a window frame, finished and presented.
-  FinishesWindowFrame,
-  // The first work is offscreen, finished.
-  FinishesOffscreen,
-  // The process ends inside the pipeline precompile, before any work.
-  InPrecompile,
-};
-
-/**
- One launch in a process of its own, through the attempt's shipped sequence:
- the guard decides, the creation window opens, the precompile starts in it
- when `precompiles` (as when pipelines were stored by an earlier launch), the
- creation window closes, the precompile ends, and the first-work window opens
- and closes, unless the launch ends inside one. Returns the plan.
- */
-RNSkCompatibilityPlan launch(const RNSkCompatibilityGuardFile &file,
-                             const std::string &appVersion, Ending ending,
-                             bool precompiles = false) {
-  RNSkCompatibilityConfig config;
-  config.guardDirectory = file.directory();
-  config.appVersion = appVersion;
-  RNSkCompatibilityAttempt attempt;
-  RNSkCompatibilityGuardState state;
-  consultCompatibilityGuard(
-      attempt, [&config]() { return config; }, state);
-  auto decision = *state.decision;
-  if (decision.plan != RNSkCompatibilityPlan::Attempt) {
-    return decision.plan;
-  }
-  if (!attempt.beginCreation(*state.file, decision.record)) {
-    return RNSkCompatibilityPlan::StopUnrecorded;
-  }
-  if (ending == Ending::InCreation) {
-    return decision.plan;
-  }
-  if (ending == Ending::FailsCleanly) {
-    attempt.endCreation(false);
-    return decision.plan;
-  }
-  const bool counted =
-      (precompiles || ending == Ending::InPrecompile) &&
-      attempt.beginPrecompile();
-  if (ending == Ending::InPrecompile) {
-    return decision.plan;
-  }
-  attempt.endCreation(true);
-  if (counted) {
-    attempt.endPrecompile();
-  }
-  if (ending == Ending::NeverDraws) {
-    return decision.plan;
-  }
-  const bool window = ending != Ending::FinishesOffscreen;
-  if (!attempt.beginFirstWork(window)) {
-    return decision.plan;
-  }
-  if (ending == Ending::InFirstWork) {
-    return decision.plan;
-  }
-  attempt.noteWorkDone(true);
-  if (window) {
-    attempt.notePresented(true);
-  }
-  return decision.plan;
-}
-
-int recorded(const RNSkCompatibilityGuardFile &file) {
-  auto record = file.read();
-  return record ? record->unfinished : 0;
-}
-
 void ruleAttemptsWithoutARecord() {
   auto decision = decideCompatibilityAttempt(std::nullopt, "1.0 (1)", true);
   expect(decision.plan == RNSkCompatibilityPlan::Attempt,
@@ -261,51 +180,6 @@ void recordRoundTripsAndRejectsOtherText() {
          "a count of more than nine digits is no record");
 }
 
-void anyVersionStringReadsBackWhole() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  const std::string longVersion(10000, 'x');
-  std::string otherLong = longVersion;
-  otherLong.back() = 'y';
-  for (const std::string &version :
-       {std::string("9.9.9\n(99)"), std::string(""), longVersion,
-        std::string("9.9.9 (99)\r\n")}) {
-    expect(file.write({version, 1}), "a record with any version is written");
-    auto read = file.read();
-    expect(read && read->appVersion == version && read->unfinished == 1,
-           "and reads back whole: a line break, an empty version, 10,000 "
-           "characters, a trailing carriage return");
-    launch(file, version, Ending::InCreation);
-    expect(launch(file, version, Ending::FinishesWindowFrame) ==
-               RNSkCompatibilityPlan::StopUnfinished,
-           "so two unfinished launches stop the level with that version too");
-    file.remove();
-  }
-  file.write({longVersion, 2});
-  expect(decideCompatibilityAttempt(file.read(), otherLong, true).plan ==
-             RNSkCompatibilityPlan::Attempt,
-         "two 10,000-character versions that differ in their last character "
-         "are two versions");
-  file.remove();
-}
-
-void anUnreadableRecordStopsTheLevel() {
-  if (::geteuid() == 0) {
-    std::printf("skipped: an unreadable record (root ignores file "
-                "permissions)\n");
-    return;
-  }
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  file.write({"9.9.9 (99)", 1});
-  ::chmod(file.path().c_str(), 0);
-  expect(!file.readable(), "a record that exists and cannot be read is seen");
-  expect(launch(file, "9.9.9 (99)", Ending::FinishesWindowFrame) ==
-             RNSkCompatibilityPlan::StopUnrecorded,
-         "and the level is not tried, rather than counting from zero");
-  ::chmod(file.path().c_str(), S_IRUSR | S_IWUSR);
-}
-
 void fileWritesReadsAndRemoves() {
   Directory directory;
   RNSkCompatibilityGuardFile file(directory.path);
@@ -323,265 +197,11 @@ void fileWritesReadsAndRemoves() {
   file.remove();
 }
 
-void fileFailsCleanlyWhereItCannotWrite() {
-  RNSkCompatibilityGuardFile none("");
-  expect(!none.usable(), "no directory makes the record unusable");
-  expect(!none.write({"1.0 (1)", 1}), "nothing is written without one");
-  RNSkCompatibilityGuardFile missing("/tmp/rnskia-guard-test-missing/a/b");
-  expect(!missing.write({"1.0 (1)", 1}),
-         "a write into a missing directory fails");
-  if (::geteuid() == 0) {
-    std::printf("skipped: a write into an unwritable directory (root ignores "
-                "directory permissions)\n");
-    return;
-  }
-  Directory directory;
-  ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
-  RNSkCompatibilityGuardFile readOnly(directory.path);
-  expect(!readOnly.write({"1.0 (1)", 1}),
-         "a write into an unwritable directory fails");
-  expect(launch(readOnly, "1.0 (1)", Ending::FinishesWindowFrame) ==
-             RNSkCompatibilityPlan::StopUnrecorded,
-         "a launch that cannot record its attempt does not try the level");
-}
-
-void twoCrashesInCreationStopTheLevel() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  expect(launch(file, "1.0 (1)", Ending::InCreation) ==
-             RNSkCompatibilityPlan::Attempt,
-         "launch 1 tries the level and ends inside the device's creation");
-  expect(recorded(file) == 1, "and counts once");
-  expect(launch(file, "1.0 (1)", Ending::InCreation) ==
-             RNSkCompatibilityPlan::Attempt,
-         "launch 2 tries it again and ends there too");
-  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
-             RNSkCompatibilityPlan::StopUnfinished,
-         "launch 3 does not try the level");
-  expect(launch(file, "1.1 (2)", Ending::FinishesWindowFrame) ==
-             RNSkCompatibilityPlan::Attempt,
-         "the next version tries it again");
-  expect(!file.read().has_value(),
-         "and its finished first work settles the attempt");
-}
-
-void twoCrashesInFirstWorkStopTheLevel() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  launch(file, "1.0 (1)", Ending::InFirstWork);
-  expect(recorded(file) == 1,
-         "a launch that ends inside its first work counts once");
-  launch(file, "1.0 (1)", Ending::InFirstWork);
-  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
-             RNSkCompatibilityPlan::StopUnfinished,
-         "two in a row stop the level");
-}
-
-void aCrashInEachWindowStopsTheLevel() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  launch(file, "1.0 (1)", Ending::InCreation);
-  launch(file, "1.0 (1)", Ending::InFirstWork);
-  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
-             RNSkCompatibilityPlan::StopUnfinished,
-         "a crash in creation and one in the first work, in a row, stop it");
-}
-
-void aProcessThatNeverDrawsNeitherCountsNorResets() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  for (int i = 0; i < 3; i++) {
-    launch(file, "1.0 (1)", Ending::NeverDraws);
-  }
-  expect(!file.read().has_value(),
-         "three launches that never draw leave no record: a background or "
-         "headless start, a restore without a canvas, a canvas-free screen");
-  launch(file, "1.0 (1)", Ending::InFirstWork);
-  launch(file, "1.0 (1)", Ending::NeverDraws);
-  expect(recorded(file) == 1,
-         "one that never draws keeps the count it found");
-  launch(file, "1.0 (1)", Ending::NeverDraws);
-  launch(file, "1.0 (1)", Ending::InFirstWork);
-  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
-             RNSkCompatibilityPlan::StopUnfinished,
-         "and does not rescue a crashing driver either");
-}
-
-void offscreenFirstWorkSettlesWithoutAPresent() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  launch(file, "1.0 (1)", Ending::InFirstWork);
-  launch(file, "1.0 (1)", Ending::FinishesOffscreen);
-  expect(!file.read().has_value(),
-         "an app that only renders offscreen settles when the GPU finishes "
-         "its first work");
-}
-
-void aWindowFrameNeedsItsPresentToo() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-  RNSkCompatibilityAttempt attempt;
-  attempt.beginCreation(file, decision.record);
-  attempt.endCreation(true);
-  expect(attempt.beginFirstWork(true), "the first window frame is watched");
-  expect(!attempt.noteWorkDone(true),
-         "a window frame whose work finished is not settled before its "
-         "present");
-  expect(recorded(file) == 1, "and stays counted until then");
-  expect(attempt.notePresented(true), "its present settles it");
-  expect(!file.read().has_value(), "and removes the record");
-  expect(!attempt.beginFirstWork(false), "later work is not watched");
-}
-
-void aCleanCreationFailureDoesNotCount() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  for (int i = 0; i < 3; i++) {
-    expect(launch(file, "1.0 (1)", Ending::FailsCleanly) ==
-               RNSkCompatibilityPlan::Attempt,
-           "a device that cannot be created is tried at every launch, so "
-           "Skia.gpu.error keeps Dawn's reason");
-  }
-  expect(!file.read().has_value(), "and leaves no record");
-  launch(file, "1.0 (1)", Ending::InCreation);
-  launch(file, "1.0 (1)", Ending::FailsCleanly);
-  expect(recorded(file) == 1,
-         "a clean failure keeps the count it found");
-}
-
-void aWriteThatFailsAfterItsRenameLeavesNoRecord() {
-  if (::geteuid() == 0) {
-    std::printf("skipped: a write that fails after its rename (root ignores "
-                "directory permissions)\n");
-    return;
-  }
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-  ::chmod(directory.path.c_str(), S_IWUSR | S_IXUSR);
-  RNSkCompatibilityAttempt attempt;
-  expect(!attempt.beginCreation(file, decision.record),
-         "a record renamed into place whose directory cannot be flushed is "
-         "not trusted: the level is not tried");
-  ::chmod(directory.path.c_str(), S_IRWXU);
-  expect(!file.read().has_value(),
-         "and the record it left is removed, so no attempt is counted for a "
-         "launch that made none");
-}
-
-void aFailedFirstWorkStaysCounted() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  for (int launchNumber = 0; launchNumber < 2; launchNumber++) {
-    auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-    RNSkCompatibilityAttempt attempt;
-    attempt.beginCreation(file, decision.record);
-    attempt.endCreation(true);
-    attempt.beginFirstWork(true);
-    if (launchNumber == 0) {
-      attempt.noteWorkDone(true);
-      expect(!attempt.notePresented(false),
-             "a present that failed, or a device lost during the first "
-             "frame, does not settle the attempt");
-    } else {
-      expect(!attempt.noteWorkDone(false),
-             "nor does work the GPU did not finish");
-    }
-    expect(!attempt.notePresented(true) && !attempt.noteWorkDone(true),
-           "and later reports change nothing");
-  }
-  expect(decideCompatibilityAttempt(file.read(), "1.0 (1)", true).plan ==
-             RNSkCompatibilityPlan::StopUnfinished,
-         "a driver that loses the device on its first frame at every launch "
-         "is stopped");
-}
-
-void aBatchWithNoWorkIsNotTheFirstWork() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  file.write({"1.0 (1)", 1});
-  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-  RNSkCompatibilityAttempt attempt;
-  attempt.beginCreation(file, decision.record);
-  attempt.endCreation(true);
-  expect(recorded(file) == 1, "a created device puts the count back");
-  expect(attempt.beginFirstWork(true), "a submission opens the window");
-  expect(recorded(file) == 2, "and counts");
-  attempt.cancelFirstWork();
-  expect(recorded(file) == 1,
-         "a submission whose every recording was rejected puts it back");
-  expect(attempt.beginFirstWork(false), "and the next one is watched");
-}
-
-void aSuccessResetsTheCount() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  launch(file, "1.0 (1)", Ending::InFirstWork);
-  launch(file, "1.0 (1)", Ending::FinishesWindowFrame);
-  expect(!file.read().has_value(),
-         "a launch whose first work finishes leaves no record");
-  expect(launch(file, "1.0 (1)", Ending::InFirstWork) ==
-             RNSkCompatibilityPlan::Attempt,
-         "an unfinished launch after a good one tries the level");
-  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
-             RNSkCompatibilityPlan::Attempt,
-         "and so does the next: one unfinished launch between good ones "
-         "never stops it");
-}
-
 RNSkCompatibilityConfig configFor(const Directory &directory) {
   RNSkCompatibilityConfig config;
   config.guardDirectory = directory.path;
   config.appVersion = "1.0 (1)";
   return config;
-}
-
-void aReplacementDeviceTouchesNoRecord() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  const auto config = configFor(directory);
-  RNSkCompatibilityAttempt attempt;
-  RNSkCompatibilityGuardState first;
-  expect(!consultCompatibilityGuard(attempt, [&config]() { return config; }, first).has_value() &&
-             first.decision.has_value(),
-         "the process's first device consults the guard");
-  attempt.beginCreation(*first.file, first.decision->record);
-  attempt.endCreation(true);
-  attempt.beginFirstWork(true);
-  attempt.noteWorkDone(true);
-  attempt.notePresented(true);
-  for (int loss = 0; loss < 3; loss++) {
-    RNSkCompatibilityGuardState replacement;
-    expect(!consultCompatibilityGuard(attempt, [&config]() { return config; }, replacement)
-                .has_value() &&
-               !replacement.decision.has_value() &&
-               !replacement.file.has_value(),
-           "a device that replaces a lost one is allowed the level and "
-           "consults no record");
-  }
-  expect(!file.read().has_value(),
-         "the background retry loop after a settled session leaves no "
-         "record");
-}
-
-void aLossDuringTheFirstWorkCountsOnce() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  const auto config = configFor(directory);
-  RNSkCompatibilityAttempt attempt;
-  RNSkCompatibilityGuardState first;
-  consultCompatibilityGuard(attempt, [&config]() { return config; }, first);
-  attempt.beginCreation(*first.file, first.decision->record);
-  attempt.endCreation(true);
-  attempt.beginFirstWork(true);
-  for (int loss = 0; loss < 3; loss++) {
-    RNSkCompatibilityGuardState replacement;
-    consultCompatibilityGuard(attempt, [&config]() { return config; }, replacement);
-  }
-  expect(recorded(file) == 1,
-         "a session that loses its device during its first work, and keeps "
-         "replacing it, counts once");
 }
 
 /**
@@ -612,37 +232,604 @@ probe(bool hasCoreAdapter, const RNSkCompatibilityConfig &config,
       });
 }
 
-void aCorePhoneNeverResolvesTheConfiguration() {
+
+using RNSkia::RNSkCompatibilityWork;
+
+int recorded(const RNSkCompatibilityGuardFile &file) {
+  auto record = file.read();
+  return record ? record->unfinished : 0;
+}
+
+/**
+ A launch in a process of its own on a device without a core adapter, driven
+ through the shipped gate and the attempt's methods in the order the context
+ calls them. The process dies where the test stops driving it (when the
+ launch goes out of scope).
+ */
+struct Launch {
+  RNSkCompatibilityAttempt attempt;
+  RNSkCompatibilityPlan plan = RNSkCompatibilityPlan::StopUnrecorded;
+
+  explicit Launch(const RNSkCompatibilityGuardFile &file,
+                  const std::string &appVersion = "1.0 (1)") {
+    RNSkCompatibilityConfig config;
+    config.guardDirectory = file.directory();
+    config.appVersion = appVersion;
+    RNSkCompatibilityGuardState state;
+    consultCompatibilityGuard(
+        attempt, [&config]() { return config; }, state);
+    if (!state.decision) {
+      return;
+    }
+    plan = state.decision->plan;
+    if (plan == RNSkCompatibilityPlan::Attempt &&
+        !attempt.beginCreation(*state.file, state.decision->record)) {
+      plan = RNSkCompatibilityPlan::StopUnrecorded;
+    }
+  }
+
+  bool tried() const { return plan == RNSkCompatibilityPlan::Attempt; }
+
+  // The device and its context exist (the constructor: the precompile, when
+  // pipelines are stored, starts before the creation window closes).
+  void create(bool precompiles = false) {
+    if (precompiles) {
+      attempt.beginPrecompile();
+    }
+    attempt.endCreation(true);
+  }
+
+  // A window frame from start to end: the window surface, its frame snapped,
+  // submitted, presented, and reported done.
+  void drawWindowFrame() {
+    attempt.openFirstWork();
+    attempt.openFirstWork();
+    if (attempt.watch(RNSkCompatibilityWork::WindowFrame)) {
+      attempt.notePresented(true);
+      attempt.noteWorkDone(true);
+    }
+  }
+
+  // An offscreen surface's draws from start to end.
+  void drawOffscreen() {
+    attempt.openFirstWork();
+    if (attempt.watch(RNSkCompatibilityWork::OffscreenDraw)) {
+      attempt.noteWorkDone(true);
+    }
+  }
+};
+
+/** Where a simulated launch ends (see the state table in the guard). */
+enum class Ending {
+  // Inside the device's creation (a driver crash or hang).
+  InCreation,
+  // The device or its context cannot be created, and Dawn says why.
+  FailsCleanly,
+  // Created, and nothing is ever drawn.
+  NeverDraws,
+  // Inside the precompile of stored pipelines.
+  InPrecompile,
+  // Inside Dawn's Configure of the first window surface (the swapchain).
+  InConfigure,
+  // At the first image the first window frame acquires.
+  AtFirstImage,
+  // Inside the pipeline compile the first snap starts on Dawn's worker.
+  InCompileAfterSnap,
+  // Inside the first window frame's submitted work.
+  InFirstWork,
+  // The first window frame finished and presented.
+  FinishesWindowFrame,
+  // The first offscreen draw finished.
+  FinishesOffscreen,
+};
+
+RNSkCompatibilityPlan launch(const RNSkCompatibilityGuardFile &file,
+                             const std::string &appVersion, Ending ending,
+                             bool precompiles = false) {
+  Launch launch(file, appVersion);
+  if (!launch.tried() || ending == Ending::InCreation) {
+    return launch.plan;
+  }
+  if (ending == Ending::FailsCleanly) {
+    launch.attempt.endCreation(false);
+    return launch.plan;
+  }
+  if (ending == Ending::InPrecompile) {
+    launch.create(/* precompiles= */ true);
+    return launch.plan;
+  }
+  launch.create(precompiles);
+  if (precompiles) {
+    launch.attempt.endPrecompile();
+  }
+  switch (ending) {
+  case Ending::NeverDraws:
+    break;
+  case Ending::InConfigure:
+  case Ending::AtFirstImage:
+    // The window surface is made, then configured, then its first image
+    // acquired: the window opened before the first of these.
+    launch.attempt.openFirstWork();
+    break;
+  case Ending::InCompileAfterSnap:
+    launch.attempt.openFirstWork();
+    break;
+  case Ending::InFirstWork:
+    launch.attempt.openFirstWork();
+    launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
+    break;
+  case Ending::FinishesWindowFrame:
+    launch.drawWindowFrame();
+    break;
+  case Ending::FinishesOffscreen:
+    launch.drawOffscreen();
+    break;
+  default:
+    break;
+  }
+  return launch.plan;
+}
+
+// Row Unused: a core device never begins, and nothing is touched.
+void rowUnusedWatchesNothing() {
   Directory directory;
-  int resolved = 0;
-  auto chosen = probe(true, configFor(directory), resolved);
-  expect(chosen && chosen->second == RNSkFeatureLevel::Core,
-         "a phone with a core adapter renders at the core level");
-  expect(resolved == 0,
-         "and never resolves the app's configuration: no settings, "
-         "directory, or version is read");
-  expect(!RNSkCompatibilityGuardFile(directory.path).read().has_value(),
-         "nor any record touched");
-  chosen = probe(false, configFor(directory), resolved);
-  expect(resolved == 1 && chosen &&
-             chosen->second == RNSkFeatureLevel::Compatibility,
-         "a phone without one resolves it once, at the gate");
+  RNSkCompatibilityGuardFile file(directory.path);
+  file.write({"1.0 (1)", 1});
+  RNSkCompatibilityAttempt attempt;
+  const auto operations = RNSkCompatibilityGuardFile::durableOperations();
+  expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Unused,
+         "Unused: a process on a device with a core adapter never begins");
+  expect(!attempt.openFirstWork() &&
+             !attempt.watch(RNSkCompatibilityWork::WindowFrame) &&
+             !attempt.watch(RNSkCompatibilityWork::OffscreenDraw) &&
+             !attempt.noteWorkDone(true) && !attempt.notePresented(true) &&
+             !attempt.beginPrecompile() && !attempt.endPrecompile(),
+         "Unused: no window surface, snap, submission, or precompile begins "
+         "anything");
+  attempt.unwatch();
+  attempt.endCreation(true);
+  expect(RNSkCompatibilityGuardFile::durableOperations() == operations &&
+             recorded(file) == 1,
+         "Unused: and nothing is written or removed");
+}
+
+// Row Creating: a death counts.
+void rowCreatingDeathCounts() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  expect(launch(file, "1.0 (1)", Ending::InCreation) ==
+             RNSkCompatibilityPlan::Attempt,
+         "Creating: launch 1 tries the level and dies in the creation");
+  expect(recorded(file) == 1, "Creating: the record holds F + 1");
+  launch(file, "1.0 (1)", Ending::InCreation);
+  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::StopUnfinished,
+         "Creating: two deaths in a row stop the level on that version");
+  expect(launch(file, "1.1 (2)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::Attempt,
+         "Creating: the next version tries it again");
+  expect(!file.read().has_value(), "and its finished first frame settles");
+}
+
+// Row Created: a launch that never draws neither counts nor resets.
+void rowCreatedNeverDrawsNeitherCountsNorResets() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int i = 0; i < 3; i++) {
+    launch(file, "1.0 (1)", Ending::NeverDraws);
+  }
+  expect(!file.read().has_value(),
+         "Created: three launches that make no window surface and snap "
+         "nothing leave no record");
+  launch(file, "1.0 (1)", Ending::InFirstWork);
+  launch(file, "1.0 (1)", Ending::NeverDraws);
+  expect(recorded(file) == 1, "Created: one keeps the count it found");
+  Launch uploads(file);
+  uploads.create();
+  expect(!uploads.attempt.watch(RNSkCompatibilityWork::Other),
+         "Created: an upload or a readback opens no window");
+  expect(recorded(file) == 1 &&
+             uploads.attempt.phase() ==
+                 RNSkCompatibilityAttempt::Phase::AwaitingFirstWork,
+         "Created: and leaves the count found");
+}
+
+// Row Created + P: a death in the precompile counts; its end puts it back.
+void rowCreatedWithPrecompile() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  launch(file, "1.0 (1)", Ending::InPrecompile);
+  expect(recorded(file) == 1,
+         "Created + P: a death in the precompile of stored pipelines counts");
+  launch(file, "1.0 (1)", Ending::InPrecompile);
+  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::StopUnfinished,
+         "Created + P: two in a row stop the level");
+  file.remove();
+  for (int i = 0; i < 3; i++) {
+    launch(file, "1.0 (1)", Ending::NeverDraws, /* precompiles= */ true);
+  }
+  expect(!file.read().has_value(),
+         "Created + P: a precompile that ends before any draw puts the count "
+         "back");
+  Launch early(file);
+  early.attempt.beginPrecompile();
+  early.attempt.endPrecompile();
+  expect(recorded(file) == 1,
+         "Created + P: a precompile that ends inside the creation window "
+         "leaves the creation's count");
+  early.attempt.endCreation(true);
+  expect(!file.read().has_value(), "and the creation's end puts it back");
+}
+
+// Row FirstWork: a death after the first window surface or the first snap
+// counts, with no precompile (a fresh install has nothing stored).
+void rowFirstWorkDeathCounts(Ending ending, const char *where) {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  launch(file, "1.0 (1)", ending);
+  if (recorded(file) != 1) {
+    expect(false, where);
+    return;
+  }
+  launch(file, "1.0 (1)", ending);
+  if (launch(file, "1.0 (1)", Ending::FinishesWindowFrame) !=
+      RNSkCompatibilityPlan::StopUnfinished) {
+    expect(false, where);
+  }
+}
+
+void rowFirstWorkDeathsCount() {
+  rowFirstWorkDeathCounts(Ending::InConfigure,
+                          "FirstWork: two deaths in Configure, on a fresh "
+                          "install, are counted and stop the level");
+  rowFirstWorkDeathCounts(Ending::AtFirstImage,
+                          "FirstWork: two deaths at the first image "
+                          "acquired are counted and stop the level");
+  rowFirstWorkDeathCounts(Ending::InCompileAfterSnap,
+                          "FirstWork: two deaths in the compile the first "
+                          "snap starts are counted and stop the level");
+  rowFirstWorkDeathCounts(Ending::InFirstWork,
+                          "FirstWork: two deaths in the first frame's "
+                          "submitted work are counted and stop the level");
+}
+
+// Row FirstWork: what opens it, and how often it writes.
+void rowFirstWorkOpensOnceAndWritesOnce() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  Launch launch(file);
+  launch.create();
+  expect(launch.attempt.openFirstWork(),
+         "FirstWork: the first window surface or snap opens it");
+  const auto operations = RNSkCompatibilityGuardFile::durableOperations();
+  expect(!launch.attempt.openFirstWork() && !launch.attempt.openFirstWork(),
+         "FirstWork: later surfaces and snaps do not reopen it");
+  expect(RNSkCompatibilityGuardFile::durableOperations() == operations,
+         "FirstWork: nor write again");
+  Directory other;
+  RNSkCompatibilityGuardFile otherFile(other.path);
+  Launch direct(otherFile);
+  direct.create();
+  expect(direct.attempt.watch(RNSkCompatibilityWork::OffscreenDraw) &&
+             recorded(otherFile) == 1,
+         "FirstWork: a draw submitted with nothing opened before it opens "
+         "the window itself");
+}
+
+// Row FirstWork: what is watched, and what settles.
+void rowFirstWorkSettles() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  file.write({"1.0 (1)", 1});
+  {
+    Launch launch(file);
+    launch.create();
+    launch.attempt.openFirstWork();
+    expect(launch.attempt.watch(RNSkCompatibilityWork::WindowFrame),
+           "FirstWork: the first window frame submitted is watched");
+    expect(!launch.attempt.watch(RNSkCompatibilityWork::WindowFrame),
+           "FirstWork: no second one while it is");
+    expect(!launch.attempt.noteWorkDone(true),
+           "FirstWork: a window frame done on the GPU but not presented "
+           "does not settle");
+    expect(recorded(file) == 2, "FirstWork: the record holds F + 1");
+    expect(launch.attempt.notePresented(true),
+           "Settled: its present on a device that was not lost settles it");
+    expect(!file.read().has_value(), "Settled: and removes the record");
+  }
+  {
+    Launch launch(file);
+    launch.create();
+    launch.attempt.openFirstWork();
+    launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
+    expect(!launch.attempt.notePresented(true),
+           "FirstWork: a present before the GPU's report does not settle");
+    expect(launch.attempt.noteWorkDone(true), "Settled: the report then does");
+  }
+  {
+    Launch launch(file);
+    launch.create();
+    launch.attempt.openFirstWork();
+    launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw);
+    expect(!launch.attempt.notePresented(true),
+           "FirstWork: an offscreen draw has no present to report");
+    expect(launch.attempt.noteWorkDone(true),
+           "Settled: an offscreen draw reported done settles");
+  }
+}
+
+// Row FirstWork: an upload, a readback, or a surface's first clear never
+// settles.
+void rowOtherWorkNeverSettles() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  file.write({"1.0 (1)", 1});
+  Launch launch(file);
+  launch.create();
+  launch.attempt.openFirstWork();
+  expect(!launch.attempt.watch(RNSkCompatibilityWork::Other),
+         "FirstWork: a clear, an upload, or a readback is never watched");
+  expect(!launch.attempt.noteWorkDone(true) && recorded(file) == 2,
+         "FirstWork: so a report of it settles nothing, and the count found "
+         "is not erased");
+  expect(launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw) &&
+             launch.attempt.noteWorkDone(true) && !file.read().has_value(),
+         "Settled: the surface's drawing behind its clear settles it");
+}
+
+// Row FirstWork: rejected batches neither settle nor write.
+void rowRejectedBatchesWriteNothing() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  file.write({"1.0 (1)", 1});
+  Launch launch(file);
+  launch.create();
+  launch.attempt.openFirstWork();
+  const auto operations = RNSkCompatibilityGuardFile::durableOperations();
+  for (int frame = 0; frame < 1000; frame++) {
+    if (!launch.attempt.watch(RNSkCompatibilityWork::WindowFrame)) {
+      expect(false, "FirstWork: every rejected batch's frame is watched");
+      return;
+    }
+    launch.attempt.unwatch();
+  }
+  expect(RNSkCompatibilityGuardFile::durableOperations() == operations,
+         "FirstWork: 1,000 frames whose batches are all rejected make no "
+         "write: the only one was the window's opening");
+  expect(recorded(file) == 2 &&
+             launch.attempt.phase() ==
+                 RNSkCompatibilityAttempt::Phase::FirstWork,
+         "FirstWork: and leave the window open at F + 1, settling nothing");
+  launch.drawWindowFrame();
+  expect(!file.read().has_value(), "Settled: a frame that draws then settles");
+}
+
+// Row Failed: a watched draw that failed stays counted.
+void rowFailedStaysCounted() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int launchNumber = 0; launchNumber < 2; launchNumber++) {
+    Launch launch(file);
+    launch.create();
+    launch.attempt.openFirstWork();
+    launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
+    if (launchNumber == 0) {
+      launch.attempt.noteWorkDone(true);
+      expect(!launch.attempt.notePresented(false),
+             "Failed: a present on a lost device does not settle");
+    } else {
+      expect(!launch.attempt.noteWorkDone(false),
+             "Failed: nor work the GPU did not finish");
+    }
+    expect(!launch.attempt.notePresented(true) &&
+               !launch.attempt.noteWorkDone(true) &&
+               !launch.attempt.watch(RNSkCompatibilityWork::WindowFrame),
+           "Failed: and nothing later changes it");
+  }
+  expect(decideCompatibilityAttempt(file.read(), "1.0 (1)", true).plan ==
+             RNSkCompatibilityPlan::StopUnfinished,
+         "Failed: two in a row stop the level");
+}
+
+// Rows FirstWorkFinished and Failed, with the precompile.
+void rowFirstWorkFinishedWhilePrecompiling() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  {
+    Launch launch(file);
+    launch.create(/* precompiles= */ true);
+    launch.drawWindowFrame();
+    expect(launch.attempt.phase() ==
+               RNSkCompatibilityAttempt::Phase::FirstWorkFinished,
+           "FirstWorkFinished: a first frame that finished while the "
+           "precompile runs waits for it");
+    expect(recorded(file) == 1, "FirstWorkFinished: the record holds F + 1");
+    expect(launch.attempt.endPrecompile(),
+           "Settled: the precompile's end settles it");
+    expect(!file.read().has_value(), "Settled: and removes the record");
+  }
+  for (int launchNumber = 0; launchNumber < 2; launchNumber++) {
+    Launch launch(file);
+    launch.create(/* precompiles= */ true);
+    launch.drawWindowFrame();
+  }
+  expect(decideCompatibilityAttempt(file.read(), "1.0 (1)", true).plan ==
+             RNSkCompatibilityPlan::StopUnfinished,
+         "FirstWorkFinished: two deaths in what is left of the precompile "
+         "after the first frame stop the level");
+  file.remove();
+  {
+    Launch launch(file);
+    launch.create(/* precompiles= */ true);
+    expect(!launch.attempt.endPrecompile(/* deviceLost= */ true),
+           "Failed: a precompile that ends on a lost device does not settle");
+    expect(launch.attempt.phase() == RNSkCompatibilityAttempt::Phase::Finished &&
+               recorded(file) == 1,
+           "Failed: it stays counted, as a first work that lost its device");
+  }
+}
+
+// Row NotTried: a clean failure, or a creation that cannot be recorded.
+void rowNotTried() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int i = 0; i < 3; i++) {
+    expect(launch(file, "1.0 (1)", Ending::FailsCleanly) ==
+               RNSkCompatibilityPlan::Attempt,
+           "NotTried: a device that cannot be created is tried at every "
+           "launch, so Skia.gpu.error keeps Dawn's reason");
+  }
+  expect(!file.read().has_value(), "NotTried: and leaves no record");
+  launch(file, "1.0 (1)", Ending::InCreation);
+  launch(file, "1.0 (1)", Ending::FailsCleanly);
+  expect(recorded(file) == 1, "NotTried: a clean failure keeps F");
+  RNSkCompatibilityGuardFile none("");
+  expect(launch(none, "1.0 (1)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::StopUnrecorded,
+         "NotTried: with no directory the level is not tried");
+  if (::geteuid() == 0) {
+    std::printf("skipped: creations that cannot record (root ignores "
+                "directory permissions)\n");
+    return;
+  }
+  ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
+  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::StopUnrecorded,
+         "NotTried: a launch that cannot record its attempt does not try the "
+         "level");
+  ::chmod(directory.path.c_str(), S_IRWXU);
+  expect(recorded(file) == 1, "NotTried: and leaves F as it found it");
+  ::chmod(directory.path.c_str(), S_IWUSR | S_IXUSR);
+  file.write({"1.0 (1)", 1});
+  Launch unflushable(file);
+  ::chmod(directory.path.c_str(), S_IRWXU);
+  expect(!unflushable.tried(),
+         "NotTried: a record renamed into place whose directory cannot be "
+         "flushed is not trusted: the level is not tried");
+  expect(recorded(file) >= 1,
+         "NotTried: and the record keeps at least the count found");
+}
+
+// Row Stopped: a write that fails after creation stops the attempt and
+// never lowers the count below F.
+void rowStoppedNeverLowersTheCount() {
+  if (::geteuid() == 0) {
+    std::printf("skipped: writes that fail after creation (root ignores "
+                "directory permissions)\n");
+    return;
+  }
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  file.write({"1.0 (1)", 1});
+  {
+    Launch launch(file);
+    launch.create();
+    ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
+    expect(!launch.attempt.openFirstWork(),
+           "Stopped: a first-work window whose count cannot be written does "
+           "not open");
+    expect(launch.attempt.phase() ==
+               RNSkCompatibilityAttempt::Phase::Finished &&
+               !launch.attempt.watch(RNSkCompatibilityWork::WindowFrame),
+           "Stopped: the attempt watches nothing more");
+    ::chmod(directory.path.c_str(), S_IRWXU);
+    expect(recorded(file) == 1, "Stopped: the record keeps F");
+  }
+  {
+    Launch launch(file);
+    ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
+    launch.attempt.endCreation(true);
+    ::chmod(directory.path.c_str(), S_IRWXU);
+    expect(launch.attempt.phase() == RNSkCompatibilityAttempt::Phase::Finished,
+           "Stopped: a creation whose count cannot be put back stops");
+    expect(recorded(file) == 2,
+           "Stopped: and leaves F + 1, never less than F");
+  }
+  file.write({"1.0 (1)", 1});
+  {
+    Launch launch(file);
+    launch.create();
+    launch.attempt.openFirstWork();
+    launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw);
+    ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
+    launch.attempt.noteWorkDone(true);
+    ::chmod(directory.path.c_str(), S_IRWXU);
+    expect(recorded(file) == 2,
+           "Stopped: a settle whose record cannot be removed leaves F + 1: "
+           "the conservative side");
+  }
+}
+
+// The record: written only when its value changes.
+void theRecordIsWrittenOnlyWhenItsValueChanges() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  const auto before = RNSkCompatibilityGuardFile::durableOperations();
+  launch(file, "1.0 (1)", Ending::FinishesWindowFrame);
+  expect(RNSkCompatibilityGuardFile::durableOperations() - before == 4,
+         "a fresh install's launch makes four durable operations: the "
+         "creation's write, its removal, the first work's write, and the "
+         "settle's removal");
+  file.write({"1.0 (1)", 1});
+  const auto found = RNSkCompatibilityGuardFile::durableOperations();
+  {
+    Launch spanning(file);
+    spanning.create(/* precompiles= */ true);
+    spanning.drawWindowFrame();
+    spanning.attempt.endPrecompile();
+  }
+  expect(RNSkCompatibilityGuardFile::durableOperations() - found == 2,
+         "a launch whose precompile spans its creation and its first frame "
+         "writes once and removes once");
+}
+
+// The record: an unreadable or foreign record.
+void anUnreadableRecordIsReplacedByThisLaunch() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  {
+    FILE *large = std::fopen(file.path().c_str(), "wb");
+    const std::string chunk(4096, 'x');
+    for (size_t written = 0;
+         written <= RNSkCompatibilityGuardFile::kMaxRecordBytes;
+         written += chunk.size()) {
+      std::fwrite(chunk.data(), 1, chunk.size(), large);
+    }
+    std::fclose(large);
+  }
+  expect(!file.read().has_value(),
+         "a file longer than kMaxRecordBytes is not a record");
+  if (::geteuid() == 0) {
+    std::printf("skipped: an unreadable record (root reads it)\n");
+    return;
+  }
+  file.write({"1.0 (1)", 1});
+  ::chmod(file.path().c_str(), 0);
+  {
+    Launch launch(file);
+    expect(launch.tried(),
+           "an unreadable record's version cannot be known, so it stops "
+           "nothing: the level is tried");
+    ::chmod(file.path().c_str(), S_IRUSR | S_IWUSR);
+    expect(recorded(file) == 1,
+           "and the record is replaced by this launch's own, counting it");
+  }
 }
 
 void exactlyOneThreadSettlesTheFirstWork() {
   Directory directory;
   RNSkCompatibilityGuardFile file(directory.path);
   for (int round = 0; round < 200; round++) {
-    auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-    RNSkCompatibilityAttempt attempt;
-    attempt.beginCreation(file, decision.record);
-    attempt.endCreation(true);
-    attempt.beginFirstWork(false);
+    Launch launch(file);
+    launch.create();
+    launch.attempt.openFirstWork();
+    launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw);
     std::atomic<int> settled{0};
     std::vector<std::thread> threads;
     for (int thread = 0; thread < 8; thread++) {
-      threads.emplace_back([&attempt, &settled]() {
-        if (attempt.noteWorkDone(true)) {
+      threads.emplace_back([&launch, &settled]() {
+        if (launch.attempt.noteWorkDone(true)) {
           settled.fetch_add(1);
         }
       });
@@ -658,201 +845,20 @@ void exactlyOneThreadSettlesTheFirstWork() {
   expect(!file.read().has_value(), "and the record is removed");
 }
 
-void aStaleTemporaryFileIsIgnored() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  FILE *stale = std::fopen((file.path() + ".tmp.1.0").c_str(), "wb");
-  std::fputs("7\nleft by an interrupted write", stale);
-  std::fclose(stale);
-  expect(!file.read().has_value(),
-         "a temporary file left by an interrupted write is not the record");
-  expect(launch(file, "1.0 (1)", Ending::InCreation) ==
-             RNSkCompatibilityPlan::Attempt,
-         "and does not stop the level");
-  expect(recorded(file) == 1, "a later write does not trip over it");
-}
-
-void twoCrashesInThePrecompileStopTheLevel() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  launch(file, "1.0 (1)", Ending::InPrecompile);
-  expect(recorded(file) == 1,
-         "a launch that ends inside the pipeline precompile counts once");
-  launch(file, "1.0 (1)", Ending::InPrecompile);
-  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
-             RNSkCompatibilityPlan::StopUnfinished,
-         "two in a row stop the level");
-}
-
-void aPrecompileBeforeAnyWorkPutsTheCountBack() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  for (int i = 0; i < 3; i++) {
-    launch(file, "1.0 (1)", Ending::NeverDraws, /* precompiles= */ true);
-  }
-  expect(!file.read().has_value(),
-         "three launches whose precompile ends before they draw leave no "
-         "record");
-  launch(file, "1.0 (1)", Ending::InFirstWork, true);
-  launch(file, "1.0 (1)", Ending::NeverDraws, true);
-  expect(recorded(file) == 1, "and one keeps the count it found");
-  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame, true) ==
-             RNSkCompatibilityPlan::Attempt,
-         "a launch that precompiles and finishes its first work tries the "
-         "level");
-  expect(!file.read().has_value(), "and settles it");
-}
-
-void thePrecompileKeepsTheCountThroughTheCreationWindow() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-  RNSkCompatibilityAttempt attempt;
-  attempt.beginCreation(file, decision.record);
-  expect(attempt.beginPrecompile(),
-         "a precompile started in the creation window is counted");
-  attempt.endCreation(true);
-  expect(recorded(file) == 1,
-         "closing the creation window keeps the count while it runs");
-  expect(!attempt.endPrecompile(), "its end settles nothing on its own");
-  expect(!file.read().has_value(), "and puts the count back");
-}
-
-void aFirstWorkFinishedDuringThePrecompileSettlesWhenItEnds() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-  RNSkCompatibilityAttempt attempt;
-  attempt.beginCreation(file, decision.record);
-  attempt.beginPrecompile();
-  attempt.endCreation(true);
-  expect(attempt.beginFirstWork(true),
-         "the first work is watched while the precompile runs");
-  expect(recorded(file) == 1, "and the count is not raised twice");
-  attempt.noteWorkDone(true);
-  expect(!attempt.notePresented(true),
-         "a first work that finishes while the precompile runs does not "
-         "settle the attempt");
-  expect(attempt.phase() ==
-             RNSkCompatibilityAttempt::Phase::FirstWorkFinished,
-         "it waits for the precompile");
-  expect(recorded(file) == 1, "which stays counted");
-  expect(attempt.endPrecompile(), "the precompile's end settles it");
-  expect(!file.read().has_value(), "and removes the record");
-  expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Finished,
-         "the attempt is finished");
-}
-
-void aCrashInThePrecompileAfterTheFirstWorkCounts() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  for (int launchNumber = 0; launchNumber < 2; launchNumber++) {
-    auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-    RNSkCompatibilityAttempt attempt;
-    attempt.beginCreation(file, decision.record);
-    attempt.endCreation(true);
-    attempt.beginFirstWork(false);
-    expect(attempt.beginPrecompile(),
-           "a precompile that starts during the first work is counted");
-    attempt.noteWorkDone(true);
-  }
-  expect(decideCompatibilityAttempt(file.read(), "1.0 (1)", true).plan ==
-             RNSkCompatibilityPlan::StopUnfinished,
-         "two launches that end inside the precompile after their first work "
-         "finished stop the level");
-}
-
-void aRejectedBatchKeepsTheCountWhileThePrecompileRuns() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-  RNSkCompatibilityAttempt attempt;
-  attempt.beginCreation(file, decision.record);
-  attempt.endCreation(true);
-  expect(!file.read().has_value(), "a created device puts the count back");
-  expect(attempt.beginPrecompile(),
-         "a precompile that starts after the creation window counts again");
-  expect(recorded(file) == 1, "and records it");
-  attempt.beginFirstWork(true);
-  attempt.cancelFirstWork();
-  expect(recorded(file) == 1,
-         "a submission that carried no work keeps the count while the "
-         "precompile runs");
-  attempt.endPrecompile();
-  expect(!file.read().has_value(), "and the precompile's end puts it back");
-}
-
-void aFailedFirstWorkDuringThePrecompileStaysCounted() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-  RNSkCompatibilityAttempt attempt;
-  attempt.beginCreation(file, decision.record);
-  attempt.beginPrecompile();
-  attempt.endCreation(true);
-  attempt.beginFirstWork(false);
-  attempt.noteWorkDone(false);
-  expect(!attempt.endPrecompile(),
-         "a precompile that ends after a failed first work settles nothing");
-  expect(recorded(file) == 1, "the attempt stays counted");
-}
-
-void onlyTheFirstPrecompileIsCounted() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-  RNSkCompatibilityAttempt attempt;
-  attempt.beginCreation(file, decision.record);
-  expect(attempt.beginPrecompile(), "the first precompile is counted");
-  expect(!attempt.beginPrecompile(), "a second one is not");
-  attempt.endCreation(true);
-  attempt.endPrecompile();
-  expect(!attempt.beginPrecompile(),
-         "nor one on a device that replaces a lost one");
-  expect(!attempt.endPrecompile(), "and an end without a begin does nothing");
-  attempt.beginFirstWork(false);
-  attempt.noteWorkDone(true);
-  expect(!attempt.beginPrecompile(),
-         "a precompile after the attempt settled is not counted");
-}
-
-void aPrecompileThatCannotRecordStopsWatching() {
-  if (::geteuid() == 0) {
-    std::printf("skipped: a precompile that cannot record (root ignores "
-                "directory permissions)\n");
-    return;
-  }
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-  RNSkCompatibilityAttempt attempt;
-  attempt.beginCreation(file, decision.record);
-  attempt.endCreation(true);
-  ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
-  expect(!attempt.beginPrecompile(),
-         "a precompile whose count cannot be written is not watched");
-  ::chmod(directory.path.c_str(), S_IRWXU);
-  expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Finished,
-         "and the attempt stops watching anything");
-  expect(!file.read().has_value(), "leaving no record");
-}
-
 void exactlyOneOfThePrecompileAndTheWorkSettles() {
   Directory directory;
   RNSkCompatibilityGuardFile file(directory.path);
   for (int round = 0; round < 200; round++) {
-    auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-    RNSkCompatibilityAttempt attempt;
-    attempt.beginCreation(file, decision.record);
-    attempt.beginPrecompile();
-    attempt.endCreation(true);
-    attempt.beginFirstWork(false);
+    Launch launch(file);
+    launch.create(/* precompiles= */ true);
+    launch.attempt.openFirstWork();
+    launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw);
     std::atomic<int> settled{0};
     std::vector<std::thread> threads;
     for (int thread = 0; thread < 8; thread++) {
-      threads.emplace_back([&attempt, &settled, thread]() {
-        const bool settles = thread == 0 ? attempt.endPrecompile()
-                                         : attempt.noteWorkDone(true);
+      threads.emplace_back([&launch, &settled, thread]() {
+        const bool settles = thread == 0 ? launch.attempt.endPrecompile()
+                                         : launch.attempt.noteWorkDone(true);
         if (settles) {
           settled.fetch_add(1);
         }
@@ -875,17 +881,15 @@ void aPrecompileStartedFromTwoThreadsCountsOnce() {
   RNSkCompatibilityGuardFile file(directory.path);
   for (int round = 0; round < 200; round++) {
     file.write({"1.0 (1)", 1});
-    auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
-    RNSkCompatibilityAttempt attempt;
-    attempt.beginCreation(file, decision.record);
+    Launch launch(file);
     if (round % 2 == 0) {
-      attempt.endCreation(true);
+      launch.attempt.endCreation(true);
     }
     std::atomic<int> counted{0};
     std::vector<std::thread> threads;
     for (int thread = 0; thread < 2; thread++) {
-      threads.emplace_back([&attempt, &counted]() {
-        if (attempt.beginPrecompile()) {
+      threads.emplace_back([&launch, &counted]() {
+        if (launch.attempt.beginPrecompile()) {
           counted.fetch_add(1);
         }
       });
@@ -895,12 +899,11 @@ void aPrecompileStartedFromTwoThreadsCountsOnce() {
     }
     if (counted.load() != 1 || recorded(file) != 2) {
       expect(false, "two threads starting the precompile at once count it "
-                    "once: the record holds the found count plus one, not "
-                    "plus two");
+                    "once: the record holds F + 1, not F + 2");
       return;
     }
-    attempt.endCreation(true);
-    attempt.endPrecompile();
+    launch.attempt.endCreation(true);
+    launch.attempt.endPrecompile();
     if (recorded(file) != 1) {
       expect(false, "and its end puts back the count the launch found");
       return;
@@ -910,15 +913,116 @@ void aPrecompileStartedFromTwoThreadsCountsOnce() {
   expect(true, "two threads starting the precompile at once count it once");
 }
 
-void anUnusedAttemptWatchesNothing() {
-  RNSkCompatibilityAttempt attempt;
-  expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Unused,
-         "a process on a device with a core adapter never begins an attempt");
-  expect(!attempt.beginFirstWork(true) && !attempt.noteWorkDone(true) &&
-             !attempt.notePresented(true),
-         "and watches no submission");
-  expect(!attempt.beginPrecompile() && !attempt.endPrecompile(),
-         "nor any precompile");
+void onlyTheFirstPrecompileIsCounted() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  Launch launch(file);
+  expect(launch.attempt.beginPrecompile(), "the first precompile is counted");
+  expect(!launch.attempt.beginPrecompile(), "a second one is not");
+  launch.attempt.endCreation(true);
+  launch.attempt.endPrecompile();
+  expect(!launch.attempt.beginPrecompile(),
+         "nor one on a device that replaces a lost one");
+  expect(!launch.attempt.endPrecompile(),
+         "and an end without a begin does nothing");
+}
+
+void aStaleTemporaryFileIsIgnored() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  FILE *stale = std::fopen((file.path() + ".tmp.1.0").c_str(), "wb");
+  std::fputs("7\nleft by an interrupted write", stale);
+  std::fclose(stale);
+  expect(!file.read().has_value(),
+         "a temporary file left by an interrupted write is not the record");
+  expect(launch(file, "1.0 (1)", Ending::InCreation) ==
+             RNSkCompatibilityPlan::Attempt,
+         "and does not stop the level");
+  expect(recorded(file) == 1, "a later write does not trip over it");
+}
+
+void aReplacementDeviceTouchesNoRecord() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  const auto config = configFor(directory);
+  Launch launch(file);
+  launch.create();
+  launch.drawWindowFrame();
+  for (int loss = 0; loss < 3; loss++) {
+    RNSkCompatibilityGuardState replacement;
+    expect(!consultCompatibilityGuard(
+                launch.attempt, [&config]() { return config; }, replacement)
+                    .has_value() &&
+               !replacement.decision.has_value() &&
+               !replacement.file.has_value(),
+           "a device that replaces a lost one is allowed the level and "
+           "consults no record");
+  }
+  expect(!file.read().has_value(),
+         "the retry loop after a settled session leaves no record");
+}
+
+void aLossDuringTheFirstWorkCountsOnce() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  const auto config = configFor(directory);
+  Launch launch(file);
+  launch.create();
+  launch.attempt.openFirstWork();
+  launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
+  for (int loss = 0; loss < 3; loss++) {
+    RNSkCompatibilityGuardState replacement;
+    consultCompatibilityGuard(launch.attempt, [&config]() { return config; },
+                              replacement);
+  }
+  expect(recorded(file) == 1,
+         "a session that loses its device during its first work, and keeps "
+         "replacing it, counts once");
+}
+
+void anyVersionStringReadsBackWhole() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  const std::string longVersion(10000, 'x');
+  std::string otherLong = longVersion;
+  otherLong.back() = 'y';
+  for (const std::string &version :
+       {std::string("9.9.9\n(99)"), std::string(""), longVersion,
+        std::string("9.9.9 (99)\r\n")}) {
+    expect(file.write({version, 1}), "a record with any version is written");
+    auto read = file.read();
+    expect(read && read->appVersion == version && read->unfinished == 1,
+           "and reads back whole: a line break, an empty version, 10,000 "
+           "characters, a trailing carriage return");
+    launch(file, version, Ending::InCreation);
+    expect(launch(file, version, Ending::FinishesWindowFrame) ==
+               RNSkCompatibilityPlan::StopUnfinished,
+           "so two unfinished launches stop the level with that version too");
+    file.remove();
+  }
+  file.write({longVersion, 2});
+  expect(decideCompatibilityAttempt(file.read(), otherLong, true).plan ==
+             RNSkCompatibilityPlan::Attempt,
+         "two 10,000-character versions that differ in their last character "
+         "are two versions");
+  file.remove();
+}
+
+void aCorePhoneNeverResolvesTheConfiguration() {
+  Directory directory;
+  int resolved = 0;
+  auto chosen = probe(true, configFor(directory), resolved);
+  expect(chosen && chosen->second == RNSkFeatureLevel::Core,
+         "a phone with a core adapter renders at the core level");
+  expect(resolved == 0,
+         "and never resolves the app's configuration: no settings, "
+         "directory, or version is read");
+  expect(!RNSkCompatibilityGuardFile(directory.path).read().has_value(),
+         "nor any record touched");
+  chosen = probe(false, configFor(directory), resolved);
+  expect(resolved == 1 && chosen &&
+             chosen->second == RNSkFeatureLevel::Compatibility,
+         "a phone without one resolves it once, at the gate");
 }
 
 } // namespace
@@ -932,41 +1036,34 @@ int main() {
   theRefusalSaysWhatWasFoundWhyAndWhen();
   recordRoundTripsAndRejectsOtherText();
   anyVersionStringReadsBackWhole();
-  anUnreadableRecordStopsTheLevel();
   fileWritesReadsAndRemoves();
-  fileFailsCleanlyWhereItCannotWrite();
-  twoCrashesInCreationStopTheLevel();
-  twoCrashesInFirstWorkStopTheLevel();
-  aCrashInEachWindowStopsTheLevel();
-  aProcessThatNeverDrawsNeitherCountsNorResets();
-  offscreenFirstWorkSettlesWithoutAPresent();
-  aWindowFrameNeedsItsPresentToo();
-  aCleanCreationFailureDoesNotCount();
-  aWriteThatFailsAfterItsRenameLeavesNoRecord();
-  aFailedFirstWorkStaysCounted();
-  aBatchWithNoWorkIsNotTheFirstWork();
-  aSuccessResetsTheCount();
+  rowUnusedWatchesNothing();
+  rowCreatingDeathCounts();
+  rowCreatedNeverDrawsNeitherCountsNorResets();
+  rowCreatedWithPrecompile();
+  rowFirstWorkDeathsCount();
+  rowFirstWorkOpensOnceAndWritesOnce();
+  rowFirstWorkSettles();
+  rowOtherWorkNeverSettles();
+  rowRejectedBatchesWriteNothing();
+  rowFailedStaysCounted();
+  rowFirstWorkFinishedWhilePrecompiling();
+  rowNotTried();
+  rowStoppedNeverLowersTheCount();
+  theRecordIsWrittenOnlyWhenItsValueChanges();
+  anUnreadableRecordIsReplacedByThisLaunch();
+  exactlyOneThreadSettlesTheFirstWork();
+  exactlyOneOfThePrecompileAndTheWorkSettles();
+  aPrecompileStartedFromTwoThreadsCountsOnce();
+  onlyTheFirstPrecompileIsCounted();
+  aStaleTemporaryFileIsIgnored();
   aReplacementDeviceTouchesNoRecord();
   aLossDuringTheFirstWorkCountsOnce();
   aCorePhoneNeverResolvesTheConfiguration();
-  exactlyOneThreadSettlesTheFirstWork();
-  aStaleTemporaryFileIsIgnored();
-  twoCrashesInThePrecompileStopTheLevel();
-  aPrecompileBeforeAnyWorkPutsTheCountBack();
-  thePrecompileKeepsTheCountThroughTheCreationWindow();
-  aFirstWorkFinishedDuringThePrecompileSettlesWhenItEnds();
-  aCrashInThePrecompileAfterTheFirstWorkCounts();
-  aRejectedBatchKeepsTheCountWhileThePrecompileRuns();
-  aFailedFirstWorkDuringThePrecompileStaysCounted();
-  onlyTheFirstPrecompileIsCounted();
-  aPrecompileThatCannotRecordStopsWatching();
-  exactlyOneOfThePrecompileAndTheWorkSettles();
-  aPrecompileStartedFromTwoThreadsCountsOnce();
-  anUnusedAttemptWatchesNothing();
   if (failures > 0) {
     std::fprintf(stderr, "%d expectation(s) failed\n", failures);
-    return EXIT_FAILURE;
+    return 1;
   }
   std::printf("RNSkCompatibilityGuardTest: all expectations met\n");
-  return EXIT_SUCCESS;
+  return 0;
 }

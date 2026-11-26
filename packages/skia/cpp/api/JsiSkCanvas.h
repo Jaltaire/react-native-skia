@@ -514,7 +514,10 @@ public:
     if (_surface) {
       auto snapshot = _surface->makeImageSnapshot();
       if (auto *recorder = _surface->recorder()) {
-        DawnContext::getInstance().submitRecording(recorder->snap().get());
+        DawnContext::getInstance().submitRecording(
+            DawnContext::snapDraws(recorder).get(),
+            skgpu::graphite::SyncToCpu::kNo,
+            RNSkCompatibilityWork::OffscreenDraw);
       }
       if (!JsiSkImage::readPixelsInto(snapshot, *info, bfrPtr, bytesPerRow,
                                       srcX, srcY)) {

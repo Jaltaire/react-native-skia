@@ -21,7 +21,7 @@ struct RNSkCompatibilityConfig {
   bool allowed = true;
   /**
    Where Skia records an attempt at the compatibility level until its first
-   frame is presented (see RNSkCompatibilityGuard): a directory of the app's
+   frame has finished (see RNSkCompatibilityAttempt): a directory of the app's
    that is kept out of backups. Empty when the platform has none, and then
    the level is not tried.
    */
