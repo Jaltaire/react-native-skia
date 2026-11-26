@@ -3,9 +3,13 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
 #include <optional>
 #include <string>
+#include <thread>
+#include <vector>
 
+#include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -43,10 +47,27 @@ struct Directory {
     path = ::mkdtemp(name);
   }
 
+  /** The names of the files in the directory. */
+  std::vector<std::string> files() const {
+    std::vector<std::string> names;
+    if (DIR *entries = ::opendir(path.c_str())) {
+      while (const dirent *entry = ::readdir(entries)) {
+        const std::string name = entry->d_name;
+        if (name != "." && name != "..") {
+          names.push_back(name);
+        }
+      }
+      ::closedir(entries);
+    }
+    return names;
+  }
+
   ~Directory() {
     ::chmod(path.c_str(), S_IRWXU);
-    RNSkCompatibilityGuardFile(path).remove();
-    ::unlink((RNSkCompatibilityGuardFile(path).path() + ".tmp").c_str());
+    for (const auto &name : files()) {
+      ::chmod((path + "/" + name).c_str(), S_IRUSR | S_IWUSR);
+      ::unlink((path + "/" + name).c_str());
+    }
     ::rmdir(path.c_str());
   }
 };
@@ -74,13 +95,18 @@ enum class Ending {
  */
 RNSkCompatibilityPlan launch(const RNSkCompatibilityGuardFile &file,
                              const std::string &appVersion, Ending ending) {
-  auto decision =
-      decideCompatibilityAttempt(file.read(), appVersion, file.readable());
+  RNSkCompatibilityConfig config;
+  config.guardDirectory = file.directory();
+  config.appVersion = appVersion;
+  RNSkCompatibilityAttempt attempt;
+  RNSkCompatibilityGuardState state;
+  consultCompatibilityGuard(
+      attempt, [&config]() { return config; }, state);
+  auto decision = *state.decision;
   if (decision.plan != RNSkCompatibilityPlan::Attempt) {
     return decision.plan;
   }
-  RNSkCompatibilityAttempt attempt;
-  if (!attempt.beginCreation(file, decision.record)) {
+  if (!attempt.beginCreation(*state.file, decision.record)) {
     return RNSkCompatibilityPlan::StopUnrecorded;
   }
   if (ending == Ending::InCreation) {
@@ -275,7 +301,8 @@ void fileWritesReadsAndRemoves() {
   auto read = file.read();
   expect(read && read->appVersion == "1.0 (1)" && read->unfinished == 1,
          "the written record reads back");
-  expect(::access((file.path() + ".tmp").c_str(), F_OK) != 0,
+  expect(directory.files() ==
+             std::vector<std::string>{"rnskia-compatibility-attempts"},
          "the temporary file is renamed away");
   file.remove();
   expect(!file.read().has_value(), "a removed record is gone");
@@ -289,6 +316,11 @@ void fileFailsCleanlyWhereItCannotWrite() {
   RNSkCompatibilityGuardFile missing("/tmp/rnskia-guard-test-missing/a/b");
   expect(!missing.write({"1.0 (1)", 1}),
          "a write into a missing directory fails");
+  if (::geteuid() == 0) {
+    std::printf("skipped: a write into an unwritable directory (root ignores "
+                "directory permissions)\n");
+    return;
+  }
   Directory directory;
   ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
   RNSkCompatibilityGuardFile readOnly(directory.path);
@@ -583,6 +615,49 @@ void aCorePhoneNeverResolvesTheConfiguration() {
          "a phone without one resolves it once, at the gate");
 }
 
+void exactlyOneThreadSettlesTheFirstWork() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int round = 0; round < 200; round++) {
+    auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+    RNSkCompatibilityAttempt attempt;
+    attempt.beginCreation(file, decision.record);
+    attempt.endCreation(true);
+    attempt.beginFirstWork(false);
+    std::atomic<int> settled{0};
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < 8; thread++) {
+      threads.emplace_back([&attempt, &settled]() {
+        if (attempt.noteWorkDone(true)) {
+          settled.fetch_add(1);
+        }
+      });
+    }
+    for (auto &thread : threads) {
+      thread.join();
+    }
+    if (settled.load() != 1) {
+      expect(false, "exactly one of eight threads settles the first work");
+      return;
+    }
+  }
+  expect(!file.read().has_value(), "and the record is removed");
+}
+
+void aStaleTemporaryFileIsIgnored() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  FILE *stale = std::fopen((file.path() + ".tmp.1.0").c_str(), "wb");
+  std::fputs("7\nleft by an interrupted write", stale);
+  std::fclose(stale);
+  expect(!file.read().has_value(),
+         "a temporary file left by an interrupted write is not the record");
+  expect(launch(file, "1.0 (1)", Ending::InCreation) ==
+             RNSkCompatibilityPlan::Attempt,
+         "and does not stop the level");
+  expect(recorded(file) == 1, "a later write does not trip over it");
+}
+
 void anUnusedAttemptWatchesNothing() {
   RNSkCompatibilityAttempt attempt;
   expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Unused,
@@ -620,6 +695,8 @@ int main() {
   aReplacementDeviceTouchesNoRecord();
   aLossDuringTheFirstWorkCountsOnce();
   aCorePhoneNeverResolvesTheConfiguration();
+  exactlyOneThreadSettlesTheFirstWork();
+  aStaleTemporaryFileIsIgnored();
   anUnusedAttemptWatchesNothing();
   if (failures > 0) {
     std::fprintf(stderr, "%d expectation(s) failed\n", failures);

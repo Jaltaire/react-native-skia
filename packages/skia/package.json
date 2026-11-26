@@ -36,6 +36,8 @@
     "Package.swift",
     "include/**",
     "react-native.config.js",
+    "app.plugin.js",
+    "plugin/**",
     "dist/**"
   ],
   "scripts": {

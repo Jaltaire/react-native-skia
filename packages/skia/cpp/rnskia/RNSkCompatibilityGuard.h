@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <mutex>
 #include <optional>
@@ -125,8 +126,11 @@ parseCompatibilityAttempts(const std::string &text) {
 /**
  The record's file, in a directory the platform keeps out of backups (see
  RNSkPlatformContext::getCompatibilityConfig). It is written to a temporary
- file, flushed, and renamed over the record, so a crash right after the
- write leaves either the old record or the new one, never a partial one.
+ file of its own (named after the process and the write), flushed, and
+ renamed over the record, so a crash right after the write leaves either the
+ old record or the new one, never a partial one. Two processes of one app
+ that write at once each rename a whole record of their own: the record is
+ then the last one renamed.
  */
 class RNSkCompatibilityGuardFile {
 public:
@@ -134,6 +138,8 @@ public:
       : _directory(std::move(directory)) {}
 
   bool usable() const { return !_directory.empty(); }
+
+  const std::string &directory() const { return _directory; }
 
   std::string path() const {
     return _directory + "/rnskia-compatibility-attempts";
@@ -187,7 +193,11 @@ public:
     if (!usable()) {
       return false;
     }
-    const auto temporary = path() + ".tmp";
+    static std::atomic<uint64_t> writes{0};
+    const auto temporary = path() + ".tmp." + std::to_string(::getpid()) +
+                           "." +
+                           std::to_string(writes.fetch_add(
+                               1, std::memory_order_relaxed));
     const auto text = formatCompatibilityAttempts(attempts);
     const int fd =
         ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,

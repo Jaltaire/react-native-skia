@@ -76,7 +76,14 @@ On Android, add this inside `<application>` in the app's manifest:
 ```
 
 On iOS, add `RNSkiaCompatibilityFeatureLevel` to `Info.plist` with the Boolean value `NO`.
-In an Expo app, set `ios.infoPlist.RNSkiaCompatibilityFeatureLevel` to `false` in the app config, and add the Android meta-data with a config plugin.
+In an Expo app, add the library's config plugin with the option, which writes both:
+
+```json
+{ "plugins": [["@shopify/react-native-skia", { "compatibilityFeatureLevel": false }]] }
+```
+
+The plugin stops the build when the option is not `true` or `false`, or when it is given an option it does not have.
+At run time, a value Skia cannot read as true or false (`"0"`, `"off"`) is logged once as an error naming the key and the value, and the level stays on, as when the key is absent.
 `Skia.gpu.error` then says that the level is turned off in the app's build settings.
 
 A driver can still fail on that level in a way no app can catch, such as a crash or a hang inside the driver.

@@ -165,8 +165,22 @@ RNSkCompatibilityConfig RNSkApplePlatformContext::getCompatibilityConfig() {
   RNSkCompatibilityConfig config;
   id allowed = [[NSBundle mainBundle]
       objectForInfoDictionaryKey:@"RNSkiaCompatibilityFeatureLevel"];
+  NSString *text = [allowed isKindOfClass:[NSString class]]
+                       ? [[allowed lowercaseString]
+                             stringByTrimmingCharactersInSet:
+                                 [NSCharacterSet whitespaceCharacterSet]]
+                       : nil;
   if ([allowed isKindOfClass:[NSNumber class]]) {
     config.allowed = [allowed boolValue];
+  } else if ([text isEqualToString:@"true"] ||
+             [text isEqualToString:@"false"]) {
+    config.allowed = [text isEqualToString:@"true"];
+  } else if (allowed != nil) {
+    RNSkLogger::logToConsole(
+        "React Native Skia could not read RNSkiaCompatibilityFeatureLevel in "
+        "Info.plist: its value %s is not true or false. The WebGPU "
+        "compatibility level stays on.",
+        [[allowed description] UTF8String]);
   }
   NSURL *support = [[NSFileManager defaultManager]
        URLForDirectory:NSApplicationSupportDirectory

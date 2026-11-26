@@ -7,6 +7,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 
 import com.facebook.jni.HybridData;
 import com.facebook.proguard.annotations.DoNotStrip;
@@ -31,13 +32,6 @@ public class PlatformContext {
     private final String TAG = "PlatformContext";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-
-    /**
-     * The manifest meta-data that turns off rendering at the WebGPU compatibility level on
-     * devices without a core adapter. Absent, the level is allowed.
-     */
-    static final String COMPATIBILITY_FEATURE_LEVEL_KEY =
-            "com.reactnative.skia.COMPATIBILITY_FEATURE_LEVEL";
 
     public PlatformContext(ReactContext reactContext) {
         mContext = reactContext;
@@ -80,15 +74,26 @@ public class PlatformContext {
     }
 
     static boolean compatibilityFeatureLevelAllowed(ReactContext context) {
+        Object value;
         try {
             ApplicationInfo info = context.getPackageManager().getApplicationInfo(
                     context.getPackageName(), PackageManager.GET_META_DATA);
             Bundle metaData = info.metaData;
-            return metaData == null || metaData.getBoolean(COMPATIBILITY_FEATURE_LEVEL_KEY, true);
+            value = metaData == null ? null : metaData.get(CompatibilityFeatureLevel.KEY);
         } catch (PackageManager.NameNotFoundException e) {
             return true;
         }
+        Boolean allowed = CompatibilityFeatureLevel.parse(value);
+        if (allowed == null) {
+            Log.e("ReactNativeSkia", "React Native Skia could not read "
+                    + CompatibilityFeatureLevel.KEY + " in the app's manifest: its value "
+                    + value + " is not true or false. The WebGPU compatibility level stays on.");
+            return true;
+        }
+        return allowed;
     }
+
+
 
     private byte[] getStreamAsBytes(InputStream is) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
