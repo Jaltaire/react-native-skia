@@ -1436,6 +1436,11 @@ void aSecondThreadOpeningDuringTheWriteSeesTheCount() {
   attempt.endCreation(true);
   armed = true;
   attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+  if (!second.joinable()) {
+    expect(false, "the opening write starts a second thread that opens the "
+                  "first work while it runs");
+    return;
+  }
   second.join();
   expect(seen.load() == 2,
          "a thread that opens the first work while the opening write runs "
