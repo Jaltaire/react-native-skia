@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -144,8 +145,15 @@ public:
   /** The largest record read: a longer file is not a record. */
   static constexpr size_t kMaxRecordBytes = 1 << 20;
 
-  explicit RNSkCompatibilityGuardFile(std::string directory)
-      : _directory(std::move(directory)) {}
+  /**
+   The record in `directory`. `beforeWrite`, when given, runs at the start of
+   every write, on the writing thread: the host test uses it to see the
+   attempt's state while one of its writes is under way.
+   */
+  explicit RNSkCompatibilityGuardFile(std::string directory,
+                                      std::function<void()> beforeWrite = {})
+      : _directory(std::move(directory)),
+        _beforeWrite(std::move(beforeWrite)) {}
 
   bool usable() const { return !_directory.empty(); }
 
@@ -193,6 +201,9 @@ public:
   bool write(const RNSkCompatibilityAttempts &attempts) const {
     if (!usable()) {
       return false;
+    }
+    if (_beforeWrite) {
+      _beforeWrite();
     }
     operations().fetch_add(1, std::memory_order_relaxed);
     static std::atomic<uint64_t> writes{0};
@@ -259,6 +270,7 @@ private:
   }
 
   std::string _directory;
+  std::function<void()> _beforeWrite;
 };
 
 /**
@@ -318,6 +330,11 @@ enum class RNSkCompatibilityWork {
  being watched (unwatch) and the next one is watched, with no write: a
  canvas whose batches are all rejected keeps the window open, raises
  nothing more, and settles nothing.
+
+ The first-work window is published (the phase becomes FirstWork) only once
+ F + 1 is on disk. The check that lets a thread go on without the mutex sees
+ AwaitingFirstWork until then, so a thread that finds the window being opened
+ waits for the opening write instead of drawing ahead of its count.
 
  Every transition is taken under the attempt's mutex. A process that never
  begins (every device with a core adapter) reads one atomic value per
@@ -538,9 +555,13 @@ private:
     if (phase() != Phase::AwaitingFirstWork) {
       return false;
     }
-    _phase.store(Phase::FirstWork, std::memory_order_release);
     _watching = false;
-    return storeOrStopLocked();
+    if (!storeValueLocked(_found + 1)) {
+      _phase.store(Phase::Finished, std::memory_order_release);
+      return false;
+    }
+    _phase.store(Phase::FirstWork, std::memory_order_release);
+    return true;
   }
 
   bool settleLocked() {

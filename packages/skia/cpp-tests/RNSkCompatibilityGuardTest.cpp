@@ -1025,6 +1025,59 @@ void aCorePhoneNeverResolvesTheConfiguration() {
          "a phone without one resolves it once, at the gate");
 }
 
+void theFirstWorkIsPublishedOnlyOnceItsCountIsOnDisk() {
+  Directory directory;
+  RNSkCompatibilityGuardFile plain(directory.path);
+  RNSkCompatibilityAttempt attempt;
+  std::vector<RNSkCompatibilityAttempt::Phase> phasesWhileWriting;
+  RNSkCompatibilityGuardFile file(directory.path, [&]() {
+    phasesWhileWriting.push_back(attempt.phase());
+  });
+  plain.write({"1.0 (1)", 1});
+  const auto decision =
+      decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  attempt.beginCreation(file, decision.record);
+  attempt.endCreation(true);
+  phasesWhileWriting.clear();
+  expect(attempt.openFirstWork(), "FirstWork: the window opens");
+  expect(phasesWhileWriting.size() == 1 &&
+             phasesWhileWriting[0] ==
+                 RNSkCompatibilityAttempt::Phase::AwaitingFirstWork,
+         "FirstWork: while the window's opening write runs, the attempt "
+         "still reports AwaitingFirstWork, so another thread's "
+         "openFirstWork() waits for the write instead of drawing ahead of "
+         "the count");
+  expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::FirstWork &&
+             recorded(plain) == 2,
+         "FirstWork: once the window is reported open, F + 1 is on disk");
+}
+
+void aWindowWhoseOpeningWriteFailsIsNeverPublished() {
+  Directory directory;
+  RNSkCompatibilityGuardFile plain(directory.path);
+  RNSkCompatibilityAttempt attempt;
+  bool failWrites = false;
+  RNSkCompatibilityGuardFile file(directory.path, [&]() {
+    if (failWrites) {
+      ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
+    }
+  });
+  plain.write({"1.0 (1)", 1});
+  const auto decision =
+      decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  attempt.beginCreation(file, decision.record);
+  attempt.endCreation(true);
+  failWrites = true;
+  const bool opened = attempt.openFirstWork();
+  ::chmod(directory.path.c_str(), S_IRWXU);
+  expect(!opened && attempt.phase() ==
+                        RNSkCompatibilityAttempt::Phase::Finished,
+         "Stopped: a window whose opening write fails is never reported "
+         "open, and the attempt stops");
+  expect(recorded(plain) == 1,
+         "Stopped: the record keeps the count the launch found");
+}
+
 } // namespace
 
 int main() {
@@ -1060,6 +1113,8 @@ int main() {
   aReplacementDeviceTouchesNoRecord();
   aLossDuringTheFirstWorkCountsOnce();
   aCorePhoneNeverResolvesTheConfiguration();
+  theFirstWorkIsPublishedOnlyOnceItsCountIsOnDisk();
+  aWindowWhoseOpeningWriteFailsIsNeverPublished();
   if (failures > 0) {
     std::fprintf(stderr, "%d expectation(s) failed\n", failures);
     return 1;
