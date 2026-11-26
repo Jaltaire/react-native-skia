@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <utility>
 
@@ -29,6 +30,27 @@ inline const char *featureLevelName(RNSkFeatureLevel level) {
     return "compatibility";
   }
   return "";
+}
+
+/**
+ The color attachment limit to request for a device at `level`, or nullopt to
+ keep the level's default. At the compatibility level the default is 4, while
+ Dawn's own MSAA expand-resolve pipeline (BlitColorToColorWithDraw) declares
+ one target per possible attachment, 8, so every pass that loads an MSAA
+ attachment fails validation there; the adapter's own limit (8 on the drivers
+ this level is for) is requested instead. At the core level the default is
+ kept, so a core device is created exactly as before.
+ */
+inline std::optional<uint32_t>
+requiredColorAttachments(RNSkFeatureLevel level,
+                         uint32_t adapterMaxColorAttachments) {
+  switch (level) {
+  case RNSkFeatureLevel::Core:
+    return std::nullopt;
+  case RNSkFeatureLevel::Compatibility:
+    return adapterMaxColorAttachments;
+  }
+  return std::nullopt;
 }
 
 /**

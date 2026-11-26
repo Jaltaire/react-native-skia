@@ -8,6 +8,7 @@
 
 using RNSkia::chooseAdapter;
 using RNSkia::featureLevelName;
+using RNSkia::requiredColorAttachments;
 using RNSkia::RNSkFeatureLevel;
 
 namespace {
@@ -84,6 +85,21 @@ void levelsAreNamedAsSkiaGpuReportsThem() {
          "the compatibility level is named \"compatibility\"");
 }
 
+void coreKeepsTheDefaultColorAttachmentLimit() {
+  expect(!requiredColorAttachments(RNSkFeatureLevel::Core, 8).has_value(),
+         "a core device keeps the level's default color attachment limit");
+}
+
+void compatibilityRequestsTheAdapterColorAttachmentLimit() {
+  auto limit = requiredColorAttachments(RNSkFeatureLevel::Compatibility, 8);
+  expect(limit.has_value() && *limit == 8,
+         "a compatibility device requests the adapter's 8 color attachments, "
+         "which Dawn's MSAA expand-resolve pipeline declares");
+  auto lower = requiredColorAttachments(RNSkFeatureLevel::Compatibility, 4);
+  expect(lower.has_value() && *lower == 4,
+         "a compatibility device never requests more than its adapter has");
+}
+
 } // namespace
 
 int main() {
@@ -91,6 +107,8 @@ int main() {
   compatibilityAdapterIsChosenWhenCoreHasNone();
   noAdapterAtEitherLevelChoosesNone();
   levelsAreNamedAsSkiaGpuReportsThem();
+  coreKeepsTheDefaultColorAttachmentLimit();
+  compatibilityRequestsTheAdapterColorAttachmentLimit();
   if (failures > 0) {
     std::fprintf(stderr, "%d expectation(s) failed\n", failures);
     return EXIT_FAILURE;

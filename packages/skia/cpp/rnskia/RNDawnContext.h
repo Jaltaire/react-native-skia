@@ -356,7 +356,7 @@ public:
   // rendering device's mutex. Safe for concurrent GPU work (e.g. ML inference)
   // alongside Skia rendering.
   wgpu::Device createSecondaryDevice() {
-    auto adapter = DawnUtils::getMatchedAdapter(instance.get());
+    auto matched = DawnUtils::getMatchedAdapter(instance.get());
 
     std::vector<wgpu::FeatureName> features = {
         wgpu::FeatureName::BufferMapExtendedUsages,
@@ -369,7 +369,8 @@ public:
 #endif
     };
 
-    return DawnUtils::requestDevice(adapter, features, /* listener= */ nullptr);
+    return DawnUtils::requestDevice(matched.adapter, matched.featureLevel,
+                                    features, /* listener= */ nullptr);
   }
 
   // Create an SkImage from a WebGPU texture

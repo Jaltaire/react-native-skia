@@ -263,8 +263,12 @@ findPlatformAdapter(dawn::native::Instance *instance,
 // adapter runs in compatibility mode, whose limits Graphite reads. Throws
 // std::runtime_error, with a message describing the device, when there is
 // none at either level.
-inline dawn::native::Adapter
-getMatchedAdapter(dawn::native::Instance *instance) {
+struct MatchedAdapter {
+  dawn::native::Adapter adapter;
+  RNSkia::RNSkFeatureLevel featureLevel;
+};
+
+inline MatchedAdapter getMatchedAdapter(dawn::native::Instance *instance) {
   auto chosen = RNSkia::chooseAdapter<dawn::native::Adapter>(
       [instance](RNSkia::RNSkFeatureLevel level) {
         return findPlatformAdapter(instance, level);
@@ -272,7 +276,7 @@ getMatchedAdapter(dawn::native::Instance *instance) {
   if (!chosen) {
     throw std::runtime_error(describeMissingAdapter(instance));
   }
-  return chosen->first;
+  return {chosen->first, chosen->second};
 }
 
 // Where requestDevice() reports what becomes of the device. A loss after
@@ -308,6 +312,7 @@ inline void storePipelineBlob(size_t keySize, const uint8_t *key,
 // pipeline storage, Dawn loads and stores its compiled blobs through it.
 inline wgpu::Device
 requestDevice(dawn::native::Adapter &nativeAdapter,
+              RNSkia::RNSkFeatureLevel featureLevel,
               const std::vector<wgpu::FeatureName> &requestedFeatures,
               DeviceLostListener *listener,
               const RNSkia::RNSkPipelineStorage *pipelineStorage = nullptr) {
@@ -379,6 +384,17 @@ requestDevice(dawn::native::Adapter &nativeAdapter,
   wgpu::DeviceDescriptor desc;
   desc.requiredFeatureCount = features.size();
   desc.requiredFeatures = features.data();
+
+  // At the compatibility level, the adapter's color attachment limit instead
+  // of the level's default (see requiredColorAttachments).
+  wgpu::Limits requiredLimits{};
+  wgpu::Limits adapterLimits{};
+  adapter.GetLimits(&adapterLimits);
+  if (auto colorAttachments = RNSkia::requiredColorAttachments(
+          featureLevel, adapterLimits.maxColorAttachments)) {
+    requiredLimits.maxColorAttachments = *colorAttachments;
+    desc.requiredLimits = &requiredLimits;
+  }
   desc.nextInChain = &togglesDesc;
 
   // Destroyed is the context tearing the device down on purpose, and
@@ -422,7 +438,8 @@ createDawnBackendContext(dawn::native::Instance *instance,
                          DeviceLostListener *listener,
                          const RNSkia::RNSkPipelineStorage *pipelineStorage) {
 
-  auto matchedAdapter = getMatchedAdapter(instance);
+  auto matched = getMatchedAdapter(instance);
+  auto &matchedAdapter = matched.adapter;
   wgpu::Adapter adapter = matchedAdapter.Get();
 
   // Log selected adapter info
@@ -522,8 +539,8 @@ createDawnBackendContext(dawn::native::Instance *instance,
   }
 #endif
 
-  wgpu::Device device =
-      requestDevice(matchedAdapter, features, listener, pipelineStorage);
+  wgpu::Device device = requestDevice(matchedAdapter, matched.featureLevel,
+                                      features, listener, pipelineStorage);
   if (!device) {
     std::string error =
         "React Native Skia could not create a GPU device on the " +
