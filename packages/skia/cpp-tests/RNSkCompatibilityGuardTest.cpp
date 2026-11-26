@@ -9,12 +9,15 @@
 #include <unistd.h>
 
 using RNSkia::compatibilityStopReason;
+using RNSkia::consultCompatibilityGuard;
 using RNSkia::decideCompatibilityAttempt;
 using RNSkia::kRNSkCompatibilityUnfinishedLaunchesToStop;
 using RNSkia::parseCompatibilityAttempts;
 using RNSkia::RNSkCompatibilityAttempt;
 using RNSkia::RNSkCompatibilityAttempts;
+using RNSkia::RNSkCompatibilityConfig;
 using RNSkia::RNSkCompatibilityGuardFile;
+using RNSkia::RNSkCompatibilityGuardState;
 using RNSkia::RNSkCompatibilityPlan;
 
 namespace {
@@ -319,6 +322,60 @@ void aSuccessResetsTheCount() {
          "never stops it");
 }
 
+RNSkCompatibilityConfig configFor(const Directory &directory) {
+  RNSkCompatibilityConfig config;
+  config.guardDirectory = directory.path;
+  config.appVersion = "1.0 (1)";
+  return config;
+}
+
+void aReplacementDeviceTouchesNoRecord() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  const auto config = configFor(directory);
+  RNSkCompatibilityAttempt attempt;
+  RNSkCompatibilityGuardState first;
+  expect(!consultCompatibilityGuard(attempt, config, first).has_value() &&
+             first.decision.has_value(),
+         "the process's first device consults the guard");
+  attempt.beginCreation(*first.file, first.decision->record);
+  attempt.endCreation(true);
+  attempt.beginFirstWork(true);
+  attempt.noteWorkDone();
+  attempt.notePresented();
+  for (int loss = 0; loss < 3; loss++) {
+    RNSkCompatibilityGuardState replacement;
+    expect(!consultCompatibilityGuard(attempt, config, replacement)
+                .has_value() &&
+               !replacement.decision.has_value() &&
+               !replacement.file.has_value(),
+           "a device that replaces a lost one is allowed the level and "
+           "consults no record");
+  }
+  expect(!file.read().has_value(),
+         "the background retry loop after a settled session leaves no "
+         "record");
+}
+
+void aLossDuringTheFirstWorkCountsOnce() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  const auto config = configFor(directory);
+  RNSkCompatibilityAttempt attempt;
+  RNSkCompatibilityGuardState first;
+  consultCompatibilityGuard(attempt, config, first);
+  attempt.beginCreation(*first.file, first.decision->record);
+  attempt.endCreation(true);
+  attempt.beginFirstWork(true);
+  for (int loss = 0; loss < 3; loss++) {
+    RNSkCompatibilityGuardState replacement;
+    consultCompatibilityGuard(attempt, config, replacement);
+  }
+  expect(recorded(file) == 1,
+         "a session that loses its device during its first work, and keeps "
+         "replacing it, counts once");
+}
+
 void anUnusedAttemptWatchesNothing() {
   RNSkCompatibilityAttempt attempt;
   expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Unused,
@@ -347,6 +404,8 @@ int main() {
   aWindowFrameNeedsItsPresentToo();
   aBatchWithNoWorkIsNotTheFirstWork();
   aSuccessResetsTheCount();
+  aReplacementDeviceTouchesNoRecord();
+  aLossDuringTheFirstWorkCountsOnce();
   anUnusedAttemptWatchesNothing();
   if (failures > 0) {
     std::fprintf(stderr, "%d expectation(s) failed\n", failures);

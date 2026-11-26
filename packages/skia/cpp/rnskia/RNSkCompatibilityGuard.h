@@ -11,6 +11,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "RNSkCompatibilityConfig.h"
+
 namespace RNSkia {
 
 /**
@@ -337,5 +339,42 @@ private:
   bool _workDone = false;
   bool _presented = false;
 };
+
+/**
+ What the guard decided for a device about to be requested (see
+ consultCompatibilityGuard): the record's file and the attempt to count when
+ the guard is consulted, nothing when the process's attempt is already under
+ way or done (a device that replaces a lost one).
+ */
+struct RNSkCompatibilityGuardState {
+  std::optional<RNSkCompatibilityGuardFile> file;
+  std::optional<RNSkCompatibilityDecision> decision;
+};
+
+/**
+ The gate on the compatibility level, asked only on a device without a core
+ adapter (see chooseAdapter): why the level is not tried, or nullopt when it
+ may be. Only the process's first device consults the guard; a later one (a
+ device that replaces a lost one) is allowed the level and touches no
+ record, so that one session cannot use up the attempts the guard allows.
+ */
+inline std::optional<std::string>
+consultCompatibilityGuard(const RNSkCompatibilityAttempt &attempt,
+                          const RNSkCompatibilityConfig &config,
+                          RNSkCompatibilityGuardState &state) {
+  if (auto refusal = compatibilityRefusal(config)) {
+    return refusal;
+  }
+  if (attempt.phase() != RNSkCompatibilityAttempt::Phase::Unused) {
+    return std::nullopt;
+  }
+  state.file.emplace(config.guardDirectory);
+  state.decision = decideCompatibilityAttempt(
+      state.file->read(), config.appVersion, state.file->usable());
+  if (state.decision->plan != RNSkCompatibilityPlan::Attempt) {
+    return compatibilityStopReason(state.decision->plan);
+  }
+  return std::nullopt;
+}
 
 } // namespace RNSkia

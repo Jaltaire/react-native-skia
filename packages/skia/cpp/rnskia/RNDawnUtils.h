@@ -455,21 +455,11 @@ createDawnBackendContext(dawn::native::Instance *instance,
                          const RNSkia::RNSkPipelineStorage *pipelineStorage,
                          const RNSkia::RNSkCompatibilityConfig &compatibility) {
 
-  RNSkia::RNSkCompatibilityGuardFile guardFile(compatibility.guardDirectory);
-  std::optional<RNSkia::RNSkCompatibilityDecision> guard;
-  auto matched = getMatchedAdapter(
-      instance, [&compatibility, &guardFile,
-                 &guard]() -> std::optional<std::string> {
-        if (auto refusal = RNSkia::compatibilityRefusal(compatibility)) {
-          return refusal;
-        }
-        guard = RNSkia::decideCompatibilityAttempt(
-            guardFile.read(), compatibility.appVersion, guardFile.usable());
-        if (guard->plan != RNSkia::RNSkCompatibilityPlan::Attempt) {
-          return RNSkia::compatibilityStopReason(guard->plan);
-        }
-        return std::nullopt;
-      });
+  auto &attempt = RNSkia::RNSkCompatibilityAttempt::process();
+  RNSkia::RNSkCompatibilityGuardState guard;
+  auto matched = getMatchedAdapter(instance, [&]() {
+    return RNSkia::consultCompatibilityGuard(attempt, compatibility, guard);
+  });
   auto &matchedAdapter = matched.adapter;
   wgpu::Adapter adapter = matchedAdapter.Get();
 
@@ -578,9 +568,9 @@ createDawnBackendContext(dawn::native::Instance *instance,
     }
   }
 
-  if (matched.featureLevel == RNSkia::RNSkFeatureLevel::Compatibility) {
-    if (!guard || !RNSkia::RNSkCompatibilityAttempt::process().beginCreation(
-                      guardFile, guard->record)) {
+  if (matched.featureLevel == RNSkia::RNSkFeatureLevel::Compatibility &&
+      guard.decision) {
+    if (!attempt.beginCreation(*guard.file, guard.decision->record)) {
       throw std::runtime_error(
           "React Native Skia found the " + adapterInfo.backend + " adapter " +
           adapterInfo.device + " only at the WebGPU compatibility feature "
