@@ -150,9 +150,42 @@ void ruleStopsWhenNothingCanBeRecorded() {
   auto decision = decideCompatibilityAttempt(std::nullopt, "1.0 (1)", false);
   expect(decision.plan == RNSkCompatibilityPlan::StopUnrecorded,
          "without a place to record the attempt the level is not tried");
-  expect(compatibilityStopReason(decision.plan).find("could not record") !=
-             std::string::npos,
+  expect(compatibilityStopReason(decision.plan, "1.0 (1)")
+                 .find("could not record") != std::string::npos,
          "and Skia.gpu.error says why");
+}
+
+void theRefusalSaysWhatWasFoundWhyAndWhen() {
+  const auto message = RNSkia::compatibilityRefusedMessage(
+      "Vulkan", "PowerVR Rogue GE8320", "driver 1.13",
+      compatibilityStopReason(RNSkCompatibilityPlan::StopUnfinished,
+                              "9.9.9 (99)"));
+  expect(message ==
+             "React Native Skia found the Vulkan adapter PowerVR Rogue "
+             "GE8320 (driver 1.13) only at the WebGPU compatibility feature "
+             "level, and did not use it: the last 2 launches of this app "
+             "version (9.9.9 (99)) that tried it ended before their first "
+             "work on it finished. It is tried again when the app's version "
+             "changes.",
+         "the guard's refusal names the adapter found, why it was not used, "
+         "and when it is tried again");
+  expect(message.find("v2") == std::string::npos &&
+             message.find("core or compatibility") == std::string::npos,
+         "and neither denies the adapter nor points to another major "
+         "version");
+  RNSkCompatibilityConfig off;
+  off.allowed = false;
+  const auto turnedOff = RNSkia::compatibilityRefusedMessage(
+      "Vulkan", "PowerVR Rogue GE8320", "",
+      *RNSkia::compatibilityRefusal(off));
+  expect(turnedOff.find("found the Vulkan adapter PowerVR Rogue GE8320 only "
+                        "at the WebGPU compatibility feature level") !=
+                 std::string::npos &&
+             turnedOff.find("turned off in this app's build settings") !=
+                 std::string::npos &&
+             turnedOff.find("tried again once the setting is removed") !=
+                 std::string::npos,
+         "the build setting's refusal says the same three things");
 }
 
 void recordRoundTripsAndRejectsOtherText() {
@@ -468,6 +501,7 @@ int main() {
   ruleStopsAfterTwoUnfinishedLaunches();
   ruleRetriesOnAnotherAppVersion();
   ruleStopsWhenNothingCanBeRecorded();
+  theRefusalSaysWhatWasFoundWhyAndWhen();
   recordRoundTripsAndRejectsOtherText();
   fileWritesReadsAndRemoves();
   fileFailsCleanlyWhereItCannotWrite();

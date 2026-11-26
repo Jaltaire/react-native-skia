@@ -263,7 +263,8 @@ struct MatchedAdapter {
 
 // `refuseCompatibility`, when given, is asked only on a device without a core
 // adapter, and says why the compatibility level is not tried (nullopt when it
-// may be); its reason ends the missing-adapter message.
+// may be). When it refuses and the device has a compatibility adapter, the
+// error names that adapter and the reason (see compatibilityRefusedMessage).
 inline MatchedAdapter getMatchedAdapter(
     dawn::native::Instance *instance,
     const std::function<std::optional<std::string>()> &refuseCompatibility =
@@ -280,11 +281,15 @@ inline MatchedAdapter getMatchedAdapter(
         return !refusal.has_value();
       });
   if (!chosen) {
-    auto message = describeMissingAdapter(instance);
     if (refusal) {
-      message += " " + *refusal;
+      if (auto compatible = findPlatformAdapter(
+              instance, RNSkia::RNSkFeatureLevel::Compatibility)) {
+        auto info = describeAdapter(compatible->Get());
+        throw std::runtime_error(RNSkia::compatibilityRefusedMessage(
+            info.backend, info.device, info.description, *refusal));
+      }
     }
-    throw std::runtime_error(message);
+    throw std::runtime_error(describeMissingAdapter(instance));
   }
   return {chosen->first, chosen->second};
 }
@@ -574,12 +579,11 @@ createDawnBackendContext(dawn::native::Instance *instance,
   if (matched.featureLevel == RNSkia::RNSkFeatureLevel::Compatibility &&
       guard.decision) {
     if (!attempt.beginCreation(*guard.file, guard.decision->record)) {
-      throw std::runtime_error(
-          "React Native Skia found the " + adapterInfo.backend + " adapter " +
-          adapterInfo.device + " only at the WebGPU compatibility feature "
-          "level. " +
+      throw std::runtime_error(RNSkia::compatibilityRefusedMessage(
+          adapterInfo.backend, adapterInfo.device, adapterInfo.description,
           RNSkia::compatibilityStopReason(
-              RNSkia::RNSkCompatibilityPlan::StopUnrecorded));
+              RNSkia::RNSkCompatibilityPlan::StopUnrecorded,
+              guard.decision->record.appVersion)));
     }
   }
 

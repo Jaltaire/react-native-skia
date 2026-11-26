@@ -70,17 +70,23 @@ decideCompatibilityAttempt(const std::optional<RNSkCompatibilityAttempts> &recor
   return {RNSkCompatibilityPlan::Attempt, {appVersion, before + 1}};
 }
 
-/** Why the compatibility level is not tried, for Skia.gpu.error. */
-inline std::string compatibilityStopReason(RNSkCompatibilityPlan plan) {
+/**
+ Why the guard does not let the level be tried on version `appVersion`: the
+ end of the sentence compatibilityRefusedMessage begins.
+ */
+inline std::string compatibilityStopReason(RNSkCompatibilityPlan plan,
+                                           const std::string &appVersion) {
   switch (plan) {
   case RNSkCompatibilityPlan::StopUnfinished:
-    return "React Native Skia did not use the WebGPU compatibility level: "
-           "its last two attempts on this app version ended before their "
-           "first frame.";
+    return "the last " +
+           std::to_string(kRNSkCompatibilityUnfinishedLaunchesToStop) +
+           " launches of this app version (" + appVersion +
+           ") that tried it ended before their first work on it finished. "
+           "It is tried again when the app's version changes.";
   case RNSkCompatibilityPlan::StopUnrecorded:
-    return "React Native Skia did not use the WebGPU compatibility level: it "
-           "could not record the attempt, so a crash on that level could not "
-           "be caught on the next launch.";
+    return "Skia could not record the attempt, so a crash on that level "
+           "could not be caught on the next launch. It is tried again on a "
+           "launch that can record it.";
   case RNSkCompatibilityPlan::Attempt:
     return "";
   }
@@ -393,7 +399,7 @@ consultCompatibilityGuard(const RNSkCompatibilityAttempt &attempt,
   state.decision = decideCompatibilityAttempt(
       state.file->read(), config.appVersion, state.file->usable());
   if (state.decision->plan != RNSkCompatibilityPlan::Attempt) {
-    return compatibilityStopReason(state.decision->plan);
+    return compatibilityStopReason(state.decision->plan, config.appVersion);
   }
   return std::nullopt;
 }

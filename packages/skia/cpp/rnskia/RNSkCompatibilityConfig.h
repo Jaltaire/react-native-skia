@@ -34,16 +34,39 @@ struct RNSkCompatibilityConfig {
 };
 
 /**
- Why Skia does not ask for an adapter at the compatibility level, or nullopt
- when it may. Asked only on a device without a core adapter.
+ Why Skia does not use the compatibility level, or nullopt when it may: the
+ end of a sentence that compatibilityRefusedMessage begins. Asked only on a
+ device without a core adapter.
  */
 inline std::optional<std::string>
 compatibilityRefusal(const RNSkCompatibilityConfig &config) {
   if (!config.allowed) {
-    return std::string("The WebGPU compatibility level is turned off in this "
-                       "app's build settings.");
+    return std::string(
+        "the level is turned off in this app's build settings "
+        "(com.reactnative.skia.COMPATIBILITY_FEATURE_LEVEL in the Android "
+        "manifest, RNSkiaCompatibilityFeatureLevel in Info.plist). It is "
+        "tried again once the setting is removed or set to true.");
   }
   return std::nullopt;
+}
+
+/**
+ What Skia.gpu.error says when a device has an adapter at the compatibility
+ level only and Skia did not use it: the adapter found, and `reason` (see
+ compatibilityRefusal, compatibilityStopReason).
+ */
+inline std::string compatibilityRefusedMessage(const std::string &backend,
+                                               const std::string &device,
+                                               const std::string &description,
+                                               const std::string &reason) {
+  std::string adapter = backend + " adapter " + device;
+  if (!description.empty()) {
+    adapter += " (" + description + ")";
+  }
+  return "React Native Skia found the " + adapter +
+         " only at the WebGPU compatibility feature level, and did not use "
+         "it: " +
+         reason;
 }
 
 } // namespace RNSkia
