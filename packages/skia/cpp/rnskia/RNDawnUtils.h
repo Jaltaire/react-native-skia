@@ -545,7 +545,8 @@ createDawnBackendContext(dawn::native::Instance *instance,
     std::string error =
         "React Native Skia could not create a GPU device on the " +
         adapterInfo.backend + " adapter " + adapterInfo.device + " (" +
-        adapterInfo.description + ").";
+        adapterInfo.description + ") at the WebGPU " +
+        RNSkia::featureLevelName(matched.featureLevel) + " feature level.";
     if (listener != nullptr && !listener->creationFailure.empty()) {
       error += " Reason: " + listener->creationFailure;
     }
