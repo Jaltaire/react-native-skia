@@ -25,6 +25,7 @@ using RNSkia::RNSkCompatibilityConfig;
 using RNSkia::RNSkCompatibilityGuardFile;
 using RNSkia::RNSkCompatibilityGuardState;
 using RNSkia::RNSkCompatibilityPlan;
+using RNSkia::RNSkCompatibilityRecordRead;
 using RNSkia::RNSkFeatureLevel;
 
 namespace {
@@ -138,6 +139,25 @@ void theRefusalSaysWhatWasFoundWhyAndWhen() {
              message.find("core or compatibility") == std::string::npos,
          "and neither denies the adapter nor points to another major "
          "version");
+  const auto unreadable = compatibilityStopReason(
+      RNSkCompatibilityPlan::StopUnreadable, "9.9.9 (99)");
+  expect(unreadable.find("could not read its record") != std::string::npos &&
+             unreadable.find("tried again on a launch that can read it") !=
+                 std::string::npos,
+         "an unreadable record's refusal says why and when it is tried "
+         "again");
+  expect(decideCompatibilityAttempt(
+             RNSkCompatibilityRecordRead{std::nullopt, true}, "1.0 (1)", true)
+                 .plan == RNSkCompatibilityPlan::StopUnreadable &&
+             decideCompatibilityAttempt(
+                 RNSkCompatibilityRecordRead{std::nullopt, true}, "1.0 (1)",
+                 false)
+                     .plan == RNSkCompatibilityPlan::StopUnrecorded &&
+             decideCompatibilityAttempt(RNSkCompatibilityRecordRead{},
+                                        "1.0 (1)", true)
+                     .plan == RNSkCompatibilityPlan::Attempt,
+         "the rule: a failed read stops this launch, no record to write "
+         "stops it first, and no record at all is tried");
   RNSkCompatibilityConfig off;
   off.allowed = false;
   const auto turnedOff = RNSkia::compatibilityRefusedMessage(
@@ -810,21 +830,42 @@ void anUnreadableRecordIsReplacedByThisLaunch() {
   }
   expect(!file.read().has_value(),
          "a file longer than kMaxRecordBytes is not a record");
-  if (::geteuid() == 0) {
-    std::printf("skipped: an unreadable record (root reads it)\n");
-    return;
-  }
-  file.write({"1.0 (1)", 1});
-  ::chmod(file.path().c_str(), 0);
   {
     Launch launch(file);
-    expect(launch.tried(),
-           "an unreadable record's version cannot be known, so it stops "
-           "nothing: the level is tried");
-    ::chmod(file.path().c_str(), S_IRUSR | S_IWUSR);
-    expect(recorded(file) == 1,
-           "and the record is replaced by this launch's own, counting it");
+    expect(launch.tried() && recorded(file) == 1,
+           "content that is not a record cannot say its version, so it "
+           "stops nothing: the level is tried, and this launch's own record "
+           "replaces it");
   }
+  {
+    FILE *garbage = std::fopen(file.path().c_str(), "wb");
+    std::fputs("not a record", garbage);
+    std::fclose(garbage);
+    Launch launch(file);
+    expect(launch.tried() && recorded(file) == 1,
+           "and so is a short one");
+  }
+  if (::geteuid() == 0) {
+    std::printf("skipped: a record the file system cannot read (root reads "
+                "it)\n");
+    return;
+  }
+  for (const int count : {1, 2}) {
+    file.write({"1.0 (1)", count});
+    ::chmod(file.path().c_str(), 0);
+    Launch launch(file);
+    ::chmod(file.path().c_str(), S_IRUSR | S_IWUSR);
+    expect(launch.plan == RNSkCompatibilityPlan::StopUnreadable &&
+               launch.attempt.phase() ==
+                   RNSkCompatibilityAttempt::Phase::Unused,
+           "a record the file system cannot read stops the level for that "
+           "launch, which makes no attempt");
+    expect(recorded(file) == count,
+           "and is left as it is, so a passing failure loses no count");
+  }
+  expect(Launch(file).plan == RNSkCompatibilityPlan::StopUnfinished,
+         "a count of two read again on the next launch still stops the "
+         "level");
 }
 
 void exactlyOneThreadSettlesTheFirstWork() {
@@ -942,15 +983,33 @@ void onlyTheFirstPrecompileIsCounted() {
 void aStaleTemporaryFileIsIgnored() {
   Directory directory;
   RNSkCompatibilityGuardFile file(directory.path);
-  FILE *stale = std::fopen((file.path() + ".tmp.1.0").c_str(), "wb");
-  std::fputs("7\nleft by an interrupted write", stale);
-  std::fclose(stale);
+  const auto write = [](const std::string &name) {
+    FILE *stale = std::fopen(name.c_str(), "wb");
+    std::fputs("7\nleft by an interrupted write", stale);
+    std::fclose(stale);
+  };
+  const auto exists = [](const std::string &name) {
+    return ::access(name.c_str(), F_OK) == 0;
+  };
+  const std::string other = file.path() + ".tmp.1.0";
+  const std::string own =
+      file.path() + ".tmp." + std::to_string(::getpid()) + ".7";
+  const std::string unrelated = directory.path + "/unrelated.tmp.1.0";
+  write(other);
+  write(own);
+  write(unrelated);
   expect(!file.read().has_value(),
          "a temporary file left by an interrupted write is not the record");
   expect(launch(file, "1.0 (1)", Ending::InCreation) ==
              RNSkCompatibilityPlan::Attempt,
          "and does not stop the level");
   expect(recorded(file) == 1, "a later write does not trip over it");
+  expect(!exists(other),
+         "the guard removes another process's stale temporary file");
+  expect(exists(own) && exists(unrelated),
+         "and keeps its own process's, and every other file");
+  ::unlink(own.c_str());
+  ::unlink(unrelated.c_str());
 }
 
 void aReplacementDeviceTouchesNoRecord() {

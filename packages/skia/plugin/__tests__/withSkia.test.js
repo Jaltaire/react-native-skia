@@ -81,4 +81,22 @@ describe("React Native Skia's config plugin", () => {
       [COMPATIBILITY_FEATURE_LEVEL_IOS_KEY]: false,
     });
   });
+
+  it("does not hide an error from expo's own config plugins", () => {
+    jest.isolateModules(() => {
+      jest.doMock(
+        "expo/config-plugins",
+        () => {
+          throw Object.assign(new Error("expo's module failed"), {
+            code: "ERR_EXPO_BROKEN",
+          });
+        },
+        { virtual: true }
+      );
+      const isolated = require("../withSkia");
+      expect(() =>
+        isolated({ name: "app" }, { compatibilityFeatureLevel: false })
+      ).toThrow("expo's module failed");
+    });
+  });
 });

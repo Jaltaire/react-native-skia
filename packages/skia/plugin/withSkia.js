@@ -68,6 +68,12 @@ function configPlugins() {
   try {
     return require("expo/config-plugins");
   } catch (error) {
+    if (
+      error.code !== "MODULE_NOT_FOUND" ||
+      !String(error.message).includes("expo/config-plugins")
+    ) {
+      throw error;
+    }
     return require("@expo/config-plugins");
   }
 }

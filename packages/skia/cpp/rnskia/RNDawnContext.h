@@ -935,7 +935,15 @@ private:
     // precompile is counted from the creation window on (see
     // RNSkCompatibilityAttempt), so that no driver work runs uncounted.
     if (_pipelineStorage != nullptr) {
-      startPrecompiling();
+      try {
+        startPrecompiling();
+      } catch (...) {
+        // Nothing of the device was used: the precompile's window, if it
+        // opened, and the creation's close without counting the launch.
+        RNSkCompatibilityAttempt::process().endPrecompile();
+        RNSkCompatibilityAttempt::process().endCreation(false);
+        throw;
+      }
     }
     RNSkCompatibilityAttempt::process().endCreation(true);
   }

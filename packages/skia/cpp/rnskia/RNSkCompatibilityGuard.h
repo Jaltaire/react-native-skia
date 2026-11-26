@@ -4,11 +4,13 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <vector>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -45,12 +47,25 @@ enum class RNSkCompatibilityPlan {
   // Not without a record: a crash on that level could not be caught on the
   // next launch.
   StopUnrecorded,
+  // Not on this launch: a record exists but the file system could not read
+  // it, and counting from nothing could lose a count that stops the level.
+  StopUnreadable,
 };
 
 struct RNSkCompatibilityDecision {
   RNSkCompatibilityPlan plan;
   // What to record before the attempt (Attempt only).
   RNSkCompatibilityAttempts record;
+};
+
+/**
+ What reading the record found: the record, or nothing (there is none, or its
+ content is not a record), and whether the file system failed to read a
+ record that exists.
+ */
+struct RNSkCompatibilityRecordRead {
+  std::optional<RNSkCompatibilityAttempts> record;
+  bool failed = false;
 };
 
 /**
@@ -73,6 +88,20 @@ decideCompatibilityAttempt(const std::optional<RNSkCompatibilityAttempts> &recor
 }
 
 /**
+ The same from what reading the record found: a record the file system could
+ not read stops the level for this launch and is left as it is, so that a
+ passing failure cannot lose a count, a count of two included.
+ */
+inline RNSkCompatibilityDecision
+decideCompatibilityAttempt(const RNSkCompatibilityRecordRead &read,
+                           const std::string &appVersion, bool canRecord) {
+  if (canRecord && read.failed) {
+    return {RNSkCompatibilityPlan::StopUnreadable, {}};
+  }
+  return decideCompatibilityAttempt(read.record, appVersion, canRecord);
+}
+
+/**
  Why the guard does not let the level be tried on version `appVersion`: the
  end of the sentence compatibilityRefusedMessage begins.
  */
@@ -89,6 +118,10 @@ inline std::string compatibilityStopReason(RNSkCompatibilityPlan plan,
     return "Skia could not record the attempt, so a crash on that level "
            "could not be caught on the next launch. It is tried again on a "
            "launch that can record it.";
+  case RNSkCompatibilityPlan::StopUnreadable:
+    return "Skia could not read its record of earlier attempts, so it could "
+           "not tell whether they stopped the level. It is tried again on a "
+           "launch that can read it.";
   case RNSkCompatibilityPlan::Attempt:
     return "";
   }
@@ -159,24 +192,35 @@ public:
 
   const std::string &directory() const { return _directory; }
 
-  std::string path() const {
-    return _directory + "/rnskia-compatibility-attempts";
-  }
+  /** The record's file name in its directory. */
+  static constexpr const char *kRecordName = "rnskia-compatibility-attempts";
+
+  std::string path() const { return _directory + "/" + kRecordName; }
 
   /**
    The record, read whole, or nullopt when there is none, it is not one, it
-   is longer than kMaxRecordBytes, or it cannot be read. The guard then
-   counts from nothing and replaces the file with its own record: an
-   unreadable record's app version cannot be known, so it cannot stop the
-   level, and replacing it means a damaged record stops nothing for good.
+   is longer than kMaxRecordBytes, or it cannot be read.
    */
   std::optional<RNSkCompatibilityAttempts> read() const {
+    return readRecord().record;
+  }
+
+  /**
+   What reading the record finds. Content that is not a record, or longer
+   than kMaxRecordBytes, reads as no record: its app version cannot be known,
+   so it cannot stop the level, and the guard replaces it with its own, so a
+   damaged record stops nothing for good. A record the file system fails to
+   open (other than its absence) or to read is reported as failed, and the
+   guard leaves it and does not try the level on that launch (see
+   decideCompatibilityAttempt).
+   */
+  RNSkCompatibilityRecordRead readRecord() const {
     if (!usable()) {
-      return std::nullopt;
+      return {};
     }
     FILE *file = std::fopen(path().c_str(), "rb");
     if (file == nullptr) {
-      return std::nullopt;
+      return {std::nullopt, errno != ENOENT};
     }
     std::string text;
     char buffer[4096];
@@ -191,10 +235,42 @@ public:
     }
     const bool failed = std::ferror(file) != 0;
     std::fclose(file);
-    if (failed || tooLong) {
-      return std::nullopt;
+    if (failed) {
+      return {std::nullopt, true};
     }
-    return parseCompatibilityAttempts(text);
+    if (tooLong) {
+      return {};
+    }
+    return {parseCompatibilityAttempts(text), false};
+  }
+
+  /**
+   Removes the temporary files that other processes' interrupted writes left
+   beside the record (see write): a process that dies inside a write leaves
+   its own for good. The guard calls it when it is consulted, which only a
+   device without a core adapter does.
+   */
+  void removeStaleTemporaryFiles() const {
+    if (!usable()) {
+      return;
+    }
+    DIR *directory = ::opendir(_directory.c_str());
+    if (directory == nullptr) {
+      return;
+    }
+    const std::string prefix = std::string(kRecordName) + ".tmp.";
+    const std::string own = prefix + std::to_string(::getpid()) + ".";
+    std::vector<std::string> stale;
+    while (const auto *entry = ::readdir(directory)) {
+      const std::string name = entry->d_name;
+      if (name.rfind(prefix, 0) == 0 && name.rfind(own, 0) != 0) {
+        stale.push_back(name);
+      }
+    }
+    ::closedir(directory);
+    for (const auto &name : stale) {
+      ::unlink((_directory + "/" + name).c_str());
+    }
   }
 
   /** Records `attempts` durably; false when any step fails. */
@@ -734,8 +810,9 @@ consultCompatibilityGuard(const RNSkCompatibilityAttempt &attempt,
     return std::nullopt;
   }
   state.file.emplace(config.guardDirectory);
+  state.file->removeStaleTemporaryFiles();
   state.decision = decideCompatibilityAttempt(
-      state.file->read(), config.appVersion, state.file->usable());
+      state.file->readRecord(), config.appVersion, state.file->usable());
   if (state.decision->plan != RNSkCompatibilityPlan::Attempt) {
     return compatibilityStopReason(state.decision->plan, config.appVersion);
   }
