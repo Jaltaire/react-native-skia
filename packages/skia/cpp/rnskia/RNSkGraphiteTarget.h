@@ -196,7 +196,8 @@ public:
                                "beginRecording() first.");
     }
     _recording = false;
-    auto recording = DawnContext::snapDraws(_recorder->recorder.get());
+    auto recording = DawnContext::snapDraws(
+        _recorder->recorder.get(), RNSkCompatibilityWork::WindowFrame);
     if (recording == nullptr) {
       throw std::runtime_error(
           "SkiaGraphiteView: snapping the recording failed.");

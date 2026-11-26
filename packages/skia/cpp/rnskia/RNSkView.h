@@ -522,8 +522,11 @@ private:
       RNSkSurface &surface,
       const std::shared_ptr<RNSkGraphiteRecording> &recording) {
     const auto &size = recording->getTarget();
-    RNSkOffscreenSurface intermediate(_platformContext, size.width, size.height,
-                                      size.useP3ColorSpace);
+    // A window frame on its way to the window: the frame presented behind
+    // it, not the texture, is what a compatibility attempt watches.
+    RNSkOffscreenSurface intermediate(
+        _platformContext, size.width, size.height, size.useP3ColorSpace,
+        RNSkOffscreenSurface::Use::WindowFrameReplay);
     RNSkGraphiteTargetInfo info;
     if (!intermediate.getTargetInfo(&info) ||
         !recording->isCompatibleWith(info)) {

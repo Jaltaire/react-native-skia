@@ -33,10 +33,26 @@ namespace RNSkia {
  */
 class RNSkOffscreenSurface final : public RNSkSurface {
 public:
+  /**
+   What the surface is drawn for, as far as a compatibility attempt is
+   concerned (see RNSkCompatibilityAttempt): its own drawing, or a window
+   frame replayed through it on its way to the window, which opens the
+   first-work window as a window frame and is never the watched work, so
+   that only the window frame behind it settles anything.
+   */
+  enum class Use { Offscreen, WindowFrameReplay };
+
   RNSkOffscreenSurface(const std::shared_ptr<RNSkPlatformContext> &context,
-                       int width, int height, bool useP3ColorSpace = false)
+                       int width, int height, bool useP3ColorSpace = false,
+                       Use use = Use::Offscreen)
       : _width(width), _height(height), _pd(context->getPixelDensity()),
         _useP3ColorSpace(useP3ColorSpace),
+        _drawWork(use == Use::WindowFrameReplay
+                      ? RNSkCompatibilityWork::WindowFrame
+                      : RNSkCompatibilityWork::OffscreenDraw),
+        _submittedWork(use == Use::WindowFrameReplay
+                           ? RNSkCompatibilityWork::Other
+                           : RNSkCompatibilityWork::OffscreenDraw),
         _surface(
             context->makeOffscreenSurface(width, height, useP3ColorSpace)) {}
 
@@ -58,9 +74,8 @@ public:
     // so that the image is complete for whoever draws it next.
     if (auto *recorder = _surface->recorder()) {
       DawnContext::getInstance().submitRecording(
-          DawnContext::snapDraws(recorder).get(),
-          skgpu::graphite::SyncToCpu::kNo,
-          RNSkCompatibilityWork::OffscreenDraw);
+          DawnContext::snapDraws(recorder, _drawWork).get(),
+          skgpu::graphite::SyncToCpu::kNo, _submittedWork);
     }
     return image;
   }
@@ -88,9 +103,8 @@ public:
     // so that the image is complete for whoever draws it next.
     if (auto *recorder = _surface->recorder()) {
       DawnContext::getInstance().submitRecording(
-          DawnContext::snapDraws(recorder).get(),
-          skgpu::graphite::SyncToCpu::kNo,
-          RNSkCompatibilityWork::OffscreenDraw);
+          DawnContext::snapDraws(recorder, _drawWork).get(),
+          skgpu::graphite::SyncToCpu::kNo, _submittedWork);
     }
     if (image == nullptr || !_useP3ColorSpace) {
       return image;
@@ -108,9 +122,8 @@ public:
     }
     srgb->getCanvas()->drawImage(image, 0, 0);
     auto converted = srgb->makeImageSnapshot();
-    context.submitRecording(DawnContext::snapDraws(recorder).get(),
-                            skgpu::graphite::SyncToCpu::kNo,
-                            RNSkCompatibilityWork::OffscreenDraw);
+    context.submitRecording(DawnContext::snapDraws(recorder, _drawWork).get(),
+                            skgpu::graphite::SyncToCpu::kNo, _submittedWork);
     return converted;
   }
 
@@ -152,12 +165,12 @@ public:
       // The clear is not the surface's drawing: it does not settle a
       // compatibility attempt (see RNSkCompatibilityWork).
       DawnContext::getInstance().submitRecording(
-          DawnContext::snapDraws(recorder).get());
+          DawnContext::snapDraws(recorder, _drawWork).get());
       _cleared = true;
     }
     // A rejected recording is logged and dropped (see RNSkWindowSurface).
-    DawnContext::getInstance().insertRecordings(
-        recordings, _surface.get(), RNSkCompatibilityWork::OffscreenDraw);
+    DawnContext::getInstance().insertRecordings(recordings, _surface.get(),
+                                                _submittedWork);
     return true;
   }
 
@@ -174,6 +187,9 @@ private:
   int _height;
   float _pd;
   bool _useP3ColorSpace;
+  // What the surface's snaps open, and what its submissions carry.
+  RNSkCompatibilityWork _drawWork;
+  RNSkCompatibilityWork _submittedWork;
   sk_sp<SkSurface> _surface;
   bool _cleared = false;
 };

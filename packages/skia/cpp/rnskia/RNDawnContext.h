@@ -386,15 +386,16 @@ public:
   }
 
   /**
-   Snaps what `recorder` recorded of draws (a window frame, an offscreen
-   surface's drawing, its first clear): Graphite starts compiling the
-   pipelines they need here, before anything is submitted, so on a
-   compatibility device the attempt's first-work window opens first (see
-   RNSkCompatibilityAttempt). A texture upload snaps its recorder directly.
+   Snaps what `recorder` recorded of draws, `work` saying what they are part
+   of: a window frame, or an offscreen surface's drawing (its first clear
+   included). Graphite starts compiling the pipelines they need here, before
+   anything is submitted, so on a compatibility device the attempt's
+   first-work window opens first (see RNSkCompatibilityAttempt). A texture
+   upload snaps its recorder directly.
    */
   static std::unique_ptr<skgpu::graphite::Recording>
-  snapDraws(skgpu::graphite::Recorder *recorder) {
-    RNSkCompatibilityAttempt::process().openFirstWork();
+  snapDraws(skgpu::graphite::Recorder *recorder, RNSkCompatibilityWork work) {
+    RNSkCompatibilityAttempt::process().openFirstWork(work);
     return recorder->snap();
   }
 
@@ -559,7 +560,8 @@ public:
     canvas->drawImage(image, 0, 0);
 
     // Flush the surface to ensure the image is rendered
-    auto recording = snapDraws(getRecorder());
+    auto recording =
+        snapDraws(getRecorder(), RNSkCompatibilityWork::OffscreenDraw);
     if (recording) {
       submitRecording(recording.get(), skgpu::graphite::SyncToCpu::kYes);
     }

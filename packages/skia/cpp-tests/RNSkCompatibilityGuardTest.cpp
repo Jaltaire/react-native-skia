@@ -282,8 +282,8 @@ struct Launch {
   // A window frame from start to end: the window surface, its frame snapped,
   // submitted, presented, and reported done.
   void drawWindowFrame() {
-    attempt.openFirstWork();
-    attempt.openFirstWork();
+    attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+    attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
     if (attempt.watch(RNSkCompatibilityWork::WindowFrame)) {
       attempt.notePresented(true);
       attempt.noteWorkDone(true);
@@ -292,7 +292,7 @@ struct Launch {
 
   // An offscreen surface's draws from start to end.
   void drawOffscreen() {
-    attempt.openFirstWork();
+    attempt.openFirstWork(RNSkCompatibilityWork::OffscreenDraw);
     if (attempt.watch(RNSkCompatibilityWork::OffscreenDraw)) {
       attempt.noteWorkDone(true);
     }
@@ -309,12 +309,17 @@ enum class Ending {
   NeverDraws,
   // Inside the precompile of stored pipelines.
   InPrecompile,
-  // Inside Dawn's Configure of the first window surface (the swapchain).
-  InConfigure,
-  // At the first image the first window frame acquires.
-  AtFirstImage,
-  // Inside the pipeline compile the first snap starts on Dawn's worker.
-  InCompileAfterSnap,
+  // After the first window surface opened the window: where Dawn configures
+  // it (the swapchain) and acquires its first image. Only the attempt's
+  // calls run here; that the window surface opens the window before Dawn
+  // does either is shown on the device.
+  AfterTheWindowSurfaceOpens,
+  // After a window frame's snap opened the window: where the compile it
+  // starts runs on Dawn's worker (shown on the device, as above).
+  AfterAWindowFrameSnapOpens,
+  // After an offscreen draw finished, then the window surface opened the
+  // window again: its swapchain, first image, and first frame.
+  AfterAnOffscreenDrawThenTheWindowSurface,
   // Inside the first window frame's submitted work.
   InFirstWork,
   // The first window frame finished and presented.
@@ -345,17 +350,16 @@ RNSkCompatibilityPlan launch(const RNSkCompatibilityGuardFile &file,
   switch (ending) {
   case Ending::NeverDraws:
     break;
-  case Ending::InConfigure:
-  case Ending::AtFirstImage:
-    // The window surface is made, then configured, then its first image
-    // acquired: the window opened before the first of these.
-    launch.attempt.openFirstWork();
+  case Ending::AfterTheWindowSurfaceOpens:
+  case Ending::AfterAWindowFrameSnapOpens:
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
     break;
-  case Ending::InCompileAfterSnap:
-    launch.attempt.openFirstWork();
+  case Ending::AfterAnOffscreenDrawThenTheWindowSurface:
+    launch.drawOffscreen();
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
     break;
   case Ending::InFirstWork:
-    launch.attempt.openFirstWork();
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
     launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
     break;
   case Ending::FinishesWindowFrame:
@@ -379,7 +383,7 @@ void rowUnusedWatchesNothing() {
   const auto operations = RNSkCompatibilityGuardFile::durableOperations();
   expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Unused,
          "Unused: a process on a device with a core adapter never begins");
-  expect(!attempt.openFirstWork() &&
+  expect(!attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame) &&
              !attempt.watch(RNSkCompatibilityWork::WindowFrame) &&
              !attempt.watch(RNSkCompatibilityWork::OffscreenDraw) &&
              !attempt.noteWorkDone(true) && !attempt.notePresented(true) &&
@@ -480,15 +484,19 @@ void rowFirstWorkDeathCounts(Ending ending, const char *where) {
 }
 
 void rowFirstWorkDeathsCount() {
-  rowFirstWorkDeathCounts(Ending::InConfigure,
-                          "FirstWork: two deaths in Configure, on a fresh "
-                          "install, are counted and stop the level");
-  rowFirstWorkDeathCounts(Ending::AtFirstImage,
-                          "FirstWork: two deaths at the first image "
-                          "acquired are counted and stop the level");
-  rowFirstWorkDeathCounts(Ending::InCompileAfterSnap,
-                          "FirstWork: two deaths in the compile the first "
-                          "snap starts are counted and stop the level");
+  rowFirstWorkDeathCounts(Ending::AfterTheWindowSurfaceOpens,
+                          "FirstWork: two deaths after the window surface "
+                          "opened the window (where Configure and the first "
+                          "image run), on a fresh install, are counted and "
+                          "stop the level");
+  rowFirstWorkDeathCounts(Ending::AfterAWindowFrameSnapOpens,
+                          "FirstWork: two deaths after a window frame's snap "
+                          "opened the window (where its compile runs) are "
+                          "counted and stop the level");
+  rowFirstWorkDeathCounts(Ending::AfterAnOffscreenDrawThenTheWindowSurface,
+                          "FirstWork again: two deaths after an offscreen "
+                          "draw finished and the window surface opened the "
+                          "window again are counted and stop the level");
   rowFirstWorkDeathCounts(Ending::InFirstWork,
                           "FirstWork: two deaths in the first frame's "
                           "submitted work are counted and stop the level");
@@ -500,10 +508,10 @@ void rowFirstWorkOpensOnceAndWritesOnce() {
   RNSkCompatibilityGuardFile file(directory.path);
   Launch launch(file);
   launch.create();
-  expect(launch.attempt.openFirstWork(),
+  expect(launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame),
          "FirstWork: the first window surface or snap opens it");
   const auto operations = RNSkCompatibilityGuardFile::durableOperations();
-  expect(!launch.attempt.openFirstWork() && !launch.attempt.openFirstWork(),
+  expect(!launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame) && !launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame),
          "FirstWork: later surfaces and snaps do not reopen it");
   expect(RNSkCompatibilityGuardFile::durableOperations() == operations,
          "FirstWork: nor write again");
@@ -525,7 +533,7 @@ void rowFirstWorkSettles() {
   {
     Launch launch(file);
     launch.create();
-    launch.attempt.openFirstWork();
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
     expect(launch.attempt.watch(RNSkCompatibilityWork::WindowFrame),
            "FirstWork: the first window frame submitted is watched");
     expect(!launch.attempt.watch(RNSkCompatibilityWork::WindowFrame),
@@ -541,7 +549,7 @@ void rowFirstWorkSettles() {
   {
     Launch launch(file);
     launch.create();
-    launch.attempt.openFirstWork();
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
     launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
     expect(!launch.attempt.notePresented(true),
            "FirstWork: a present before the GPU's report does not settle");
@@ -550,12 +558,13 @@ void rowFirstWorkSettles() {
   {
     Launch launch(file);
     launch.create();
-    launch.attempt.openFirstWork();
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::OffscreenDraw);
     launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw);
     expect(!launch.attempt.notePresented(true),
            "FirstWork: an offscreen draw has no present to report");
-    expect(launch.attempt.noteWorkDone(true),
-           "Settled: an offscreen draw reported done settles");
+    expect(!launch.attempt.noteWorkDone(true),
+           "OffscreenFinished: an offscreen draw reported done does not "
+           "settle");
   }
 }
 
@@ -567,15 +576,15 @@ void rowOtherWorkNeverSettles() {
   file.write({"1.0 (1)", 1});
   Launch launch(file);
   launch.create();
-  launch.attempt.openFirstWork();
+  launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
   expect(!launch.attempt.watch(RNSkCompatibilityWork::Other),
          "FirstWork: a clear, an upload, or a readback is never watched");
   expect(!launch.attempt.noteWorkDone(true) && recorded(file) == 2,
          "FirstWork: so a report of it settles nothing, and the count found "
          "is not erased");
-  expect(launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw) &&
-             launch.attempt.noteWorkDone(true) && !file.read().has_value(),
-         "Settled: the surface's drawing behind its clear settles it");
+  expect(launch.attempt.watch(RNSkCompatibilityWork::WindowFrame) && !launch.attempt.noteWorkDone(true) &&
+             launch.attempt.notePresented(true) && !file.read().has_value(),
+         "Settled: the window frame behind it settles it");
 }
 
 // Row FirstWork: rejected batches neither settle nor write.
@@ -585,7 +594,7 @@ void rowRejectedBatchesWriteNothing() {
   file.write({"1.0 (1)", 1});
   Launch launch(file);
   launch.create();
-  launch.attempt.openFirstWork();
+  launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
   const auto operations = RNSkCompatibilityGuardFile::durableOperations();
   for (int frame = 0; frame < 1000; frame++) {
     if (!launch.attempt.watch(RNSkCompatibilityWork::WindowFrame)) {
@@ -612,7 +621,7 @@ void rowFailedStaysCounted() {
   for (int launchNumber = 0; launchNumber < 2; launchNumber++) {
     Launch launch(file);
     launch.create();
-    launch.attempt.openFirstWork();
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
     launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
     if (launchNumber == 0) {
       launch.attempt.noteWorkDone(true);
@@ -726,7 +735,7 @@ void rowStoppedNeverLowersTheCount() {
     Launch launch(file);
     launch.create();
     ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
-    expect(!launch.attempt.openFirstWork(),
+    expect(!launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame),
            "Stopped: a first-work window whose count cannot be written does "
            "not open");
     expect(launch.attempt.phase() ==
@@ -750,8 +759,9 @@ void rowStoppedNeverLowersTheCount() {
   {
     Launch launch(file);
     launch.create();
-    launch.attempt.openFirstWork();
-    launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw);
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.notePresented(true);
     ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
     launch.attempt.noteWorkDone(true);
     ::chmod(directory.path.c_str(), S_IRWXU);
@@ -823,8 +833,9 @@ void exactlyOneThreadSettlesTheFirstWork() {
   for (int round = 0; round < 200; round++) {
     Launch launch(file);
     launch.create();
-    launch.attempt.openFirstWork();
-    launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw);
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.notePresented(true);
     std::atomic<int> settled{0};
     std::vector<std::thread> threads;
     for (int thread = 0; thread < 8; thread++) {
@@ -851,8 +862,9 @@ void exactlyOneOfThePrecompileAndTheWorkSettles() {
   for (int round = 0; round < 200; round++) {
     Launch launch(file);
     launch.create(/* precompiles= */ true);
-    launch.attempt.openFirstWork();
-    launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw);
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.notePresented(true);
     std::atomic<int> settled{0};
     std::vector<std::thread> threads;
     for (int thread = 0; thread < 8; thread++) {
@@ -968,7 +980,7 @@ void aLossDuringTheFirstWorkCountsOnce() {
   const auto config = configFor(directory);
   Launch launch(file);
   launch.create();
-  launch.attempt.openFirstWork();
+  launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
   launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
   for (int loss = 0; loss < 3; loss++) {
     RNSkCompatibilityGuardState replacement;
@@ -1039,7 +1051,7 @@ void theFirstWorkIsPublishedOnlyOnceItsCountIsOnDisk() {
   attempt.beginCreation(file, decision.record);
   attempt.endCreation(true);
   phasesWhileWriting.clear();
-  expect(attempt.openFirstWork(), "FirstWork: the window opens");
+  expect(attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame), "FirstWork: the window opens");
   expect(phasesWhileWriting.size() == 1 &&
              phasesWhileWriting[0] ==
                  RNSkCompatibilityAttempt::Phase::AwaitingFirstWork,
@@ -1053,6 +1065,11 @@ void theFirstWorkIsPublishedOnlyOnceItsCountIsOnDisk() {
 }
 
 void aWindowWhoseOpeningWriteFailsIsNeverPublished() {
+  if (::geteuid() == 0) {
+    std::printf("skipped: an opening write that fails (root ignores "
+                "directory permissions)\n");
+    return;
+  }
   Directory directory;
   RNSkCompatibilityGuardFile plain(directory.path);
   RNSkCompatibilityAttempt attempt;
@@ -1068,7 +1085,7 @@ void aWindowWhoseOpeningWriteFailsIsNeverPublished() {
   attempt.beginCreation(file, decision.record);
   attempt.endCreation(true);
   failWrites = true;
-  const bool opened = attempt.openFirstWork();
+  const bool opened = attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
   ::chmod(directory.path.c_str(), S_IRWXU);
   expect(!opened && attempt.phase() ==
                         RNSkCompatibilityAttempt::Phase::Finished,
@@ -1076,6 +1093,294 @@ void aWindowWhoseOpeningWriteFailsIsNeverPublished() {
          "open, and the attempt stops");
   expect(recorded(plain) == 1,
          "Stopped: the record keeps the count the launch found");
+}
+
+// Row OffscreenFinished: an offscreen draw that finishes before any window
+// closes the window without settling, and only a window opens it again.
+void rowOffscreenFinishedClosesTheWindowWithoutSettling() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  file.write({"1.0 (1)", 1});
+  Launch launch(file);
+  launch.create();
+  expect(launch.attempt.openFirstWork(RNSkCompatibilityWork::OffscreenDraw) && recorded(file) == 2,
+         "FirstWork: an offscreen draw's snap opens the window");
+  expect(launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw) && !launch.attempt.noteWorkDone(true),
+         "OffscreenFinished: its draw reported done does not settle");
+  expect(launch.attempt.phase() ==
+                 RNSkCompatibilityAttempt::Phase::OffscreenFinished &&
+             recorded(file) == 1,
+         "OffscreenFinished: the window closes, and the record holds F, "
+         "not nothing: the count found is not erased");
+  const auto operations = RNSkCompatibilityGuardFile::durableOperations();
+  expect(!launch.attempt.openFirstWork(RNSkCompatibilityWork::OffscreenDraw) &&
+             !launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw) &&
+             RNSkCompatibilityGuardFile::durableOperations() == operations,
+         "OffscreenFinished: another offscreen draw opens nothing, is not "
+         "watched, and writes nothing");
+  expect(launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame) && recorded(file) == 2 &&
+             launch.attempt.phase() ==
+                 RNSkCompatibilityAttempt::Phase::FirstWork,
+         "FirstWork again: the window surface made next opens the window "
+         "again, at F + 1");
+  expect(!launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw),
+         "FirstWork again: an offscreen draw is not watched any more");
+  expect(launch.attempt.watch(RNSkCompatibilityWork::WindowFrame) && !launch.attempt.noteWorkDone(true) &&
+             launch.attempt.notePresented(true) && !file.read().has_value(),
+         "Settled: only the window frame done and presented settles, and "
+         "removes the record");
+}
+
+// Row FirstWork again: a window frame submitted (or snapped) after the
+// offscreen draw opens the window again too.
+void rowFirstWorkAgainFromAWindowFrame() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  Launch launch(file);
+  launch.create();
+  launch.drawOffscreen();
+  expect(launch.attempt.phase() ==
+             RNSkCompatibilityAttempt::Phase::OffscreenFinished,
+         "OffscreenFinished: on a fresh install too");
+  expect(!file.read().has_value(),
+         "OffscreenFinished: a fresh install's record holds nothing");
+  expect(launch.attempt.watch(RNSkCompatibilityWork::WindowFrame) && recorded(file) == 1,
+         "FirstWork again: a window frame submitted opens the window "
+         "itself and is watched");
+  expect(!launch.attempt.notePresented(true) &&
+             launch.attempt.noteWorkDone(true) && !file.read().has_value(),
+         "Settled: once presented and reported done");
+}
+
+// An offscreen draw that finishes after a window surface was made, or a
+// window frame snapped, leaves the window open.
+void anOffscreenDrawAfterAWindowLeavesTheWindowOpen() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  file.write({"1.0 (1)", 1});
+  for (const bool bySnap : {false, true}) {
+    Launch launch(file);
+    launch.create();
+    launch.attempt.openFirstWork(bySnap ? RNSkCompatibilityWork::OffscreenDraw : RNSkCompatibilityWork::WindowFrame);
+    if (bySnap) {
+      launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+    }
+    expect(launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw) && !launch.attempt.noteWorkDone(true),
+           "FirstWork: an offscreen draw finished after a window does not "
+           "settle");
+    expect(launch.attempt.phase() ==
+                   RNSkCompatibilityAttempt::Phase::FirstWork &&
+               recorded(file) == 2,
+           "FirstWork: and leaves the window open at F + 1, for the window's "
+           "first image and first frame");
+    expect(!launch.attempt.watch(RNSkCompatibilityWork::OffscreenDraw) && launch.attempt.watch(RNSkCompatibilityWork::WindowFrame),
+           "FirstWork: from then on only a window frame is watched");
+    launch.attempt.notePresented(true);
+    launch.attempt.noteWorkDone(true);
+    expect(!file.read().has_value(), "Settled: by the window frame");
+    file.write({"1.0 (1)", 1});
+  }
+}
+
+// Row OffscreenFinished + P: the precompile keeps the count raised.
+void rowOffscreenFinishedWhilePrecompiling() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  file.write({"1.0 (1)", 1});
+  Launch launch(file);
+  launch.create(/* precompiles= */ true);
+  launch.drawOffscreen();
+  expect(launch.attempt.phase() ==
+                 RNSkCompatibilityAttempt::Phase::OffscreenFinished &&
+             recorded(file) == 2,
+         "OffscreenFinished + P: the precompile keeps F + 1");
+  expect(!launch.attempt.endPrecompile() && recorded(file) == 1,
+         "OffscreenFinished: its end puts back F and settles nothing");
+  launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+  launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
+  launch.attempt.notePresented(true);
+  expect(launch.attempt.noteWorkDone(true) && !file.read().has_value(),
+         "Settled: by the window frame after it");
+}
+
+// The ruling's sequence: an offscreen draw finishes, the window surface is
+// made, and the launch dies; the same again; the third launch is refused.
+void anOffscreenDrawFirstThenTwoWindowDeathsStopTheLevel() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int launchNumber = 0; launchNumber < 2; launchNumber++) {
+    Launch launch(file);
+    expect(launch.tried(), "launches 1 and 2 try the level");
+    launch.create();
+    launch.drawOffscreen();
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+    expect(recorded(file) == launchNumber + 1,
+           "FirstWork again: the window surface made after the offscreen "
+           "draw counts the launch");
+  }
+  Launch third(file);
+  expect(third.plan == RNSkCompatibilityPlan::StopUnfinished,
+         "the third launch is refused: an offscreen draw that finished first "
+         "does not restart the count");
+}
+
+// A process that only ever draws offscreen keeps the count it found.
+void anOffscreenOnlyProcessKeepsTheCountItFound() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int launchNumber = 0; launchNumber < 5; launchNumber++) {
+    expect(launch(file, "1.0 (1)", Ending::FinishesOffscreen) ==
+                   RNSkCompatibilityPlan::Attempt &&
+               !file.read().has_value(),
+           "a fresh install that only draws offscreen leaves no record, "
+           "launch after launch");
+  }
+  file.write({"1.0 (1)", 1});
+  for (int launchNumber = 0; launchNumber < 5; launchNumber++) {
+    expect(launch(file, "1.0 (1)", Ending::FinishesOffscreen) ==
+                   RNSkCompatibilityPlan::Attempt &&
+               recorded(file) == 1,
+           "one that found a count keeps it, neither raised nor cleared, "
+           "until the app's version changes");
+  }
+  launch(file, "1.0 (1)", Ending::AfterTheWindowSurfaceOpens);
+  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::StopUnfinished,
+         "so one later death in a window stops the level");
+  expect(launch(file, "1.0 (2)", Ending::FinishesOffscreen) ==
+                 RNSkCompatibilityPlan::Attempt &&
+             !file.read().has_value(),
+         "and the next version starts again from nothing");
+}
+
+// The transitions the fourth review found untested.
+void theRemainingTransitions() {
+  {
+    Directory directory;
+    RNSkCompatibilityGuardFile file(directory.path);
+    Launch launch(file);
+    launch.create(/* precompiles= */ true);
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+    expect(!launch.attempt.endPrecompile(/* deviceLost= */ true) &&
+               launch.attempt.phase() ==
+                   RNSkCompatibilityAttempt::Phase::Finished &&
+               recorded(file) == 1,
+           "Failed: a precompile ending on a lost device in FirstWork stays "
+           "counted");
+  }
+  {
+    Directory directory;
+    RNSkCompatibilityGuardFile file(directory.path);
+    Launch launch(file);
+    launch.create(/* precompiles= */ true);
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.notePresented(true);
+    launch.attempt.noteWorkDone(true);
+    expect(!launch.attempt.endPrecompile(/* deviceLost= */ true) &&
+               recorded(file) == 1,
+           "Failed: and so does one ending on a lost device in "
+           "FirstWorkFinished");
+  }
+  {
+    Directory directory;
+    RNSkCompatibilityGuardFile file(directory.path);
+    Launch launch(file);
+    launch.create();
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+    expect(launch.attempt.phase() ==
+                   RNSkCompatibilityAttempt::Phase::FirstWork &&
+               recorded(file) == 1,
+           "FirstWork: a device lost with nothing watched leaves the window "
+           "open, so the launch counts when it ends");
+  }
+  if (::geteuid() == 0) {
+    std::printf("skipped: failed writes at the precompile's end (root "
+                "ignores directory permissions)\n");
+    return;
+  }
+  {
+    Directory directory;
+    RNSkCompatibilityGuardFile file(directory.path);
+    file.write({"1.0 (1)", 1});
+    Launch launch(file);
+    launch.create(/* precompiles= */ true);
+    ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
+    launch.attempt.endPrecompile();
+    ::chmod(directory.path.c_str(), S_IRWXU);
+    expect(launch.attempt.phase() ==
+                   RNSkCompatibilityAttempt::Phase::Finished &&
+               recorded(file) == 2,
+           "Stopped: a restore that fails at the precompile's end stops, "
+           "leaving F + 1");
+    expect(!launch.attempt.endPrecompile() && !launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame),
+           "Stopped: and nothing after it writes");
+  }
+  {
+    Directory directory;
+    RNSkCompatibilityGuardFile file(directory.path);
+    file.write({"1.0 (1)", 1});
+    Launch launch(file);
+    launch.create(/* precompiles= */ true);
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.notePresented(true);
+    launch.attempt.noteWorkDone(true);
+    ::chmod(directory.path.c_str(), S_IRUSR | S_IXUSR);
+    launch.attempt.endPrecompile();
+    ::chmod(directory.path.c_str(), S_IRWXU);
+    expect(recorded(file) == 2,
+           "a removal that fails when the precompile's end settles leaves "
+           "F + 1: the conservative side");
+  }
+  {
+    Directory directory;
+    RNSkCompatibilityGuardFile file(directory.path);
+    file.write({"1.0 (1)", 1});
+    Launch launch(file);
+    launch.create(/* precompiles= */ true);
+    launch.attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.watch(RNSkCompatibilityWork::WindowFrame);
+    launch.attempt.noteWorkDone(false);
+    const auto operations = RNSkCompatibilityGuardFile::durableOperations();
+    expect(!launch.attempt.endPrecompile() &&
+               RNSkCompatibilityGuardFile::durableOperations() == operations &&
+               recorded(file) == 2,
+           "Finished while P runs (here Failed): P's end writes nothing and "
+           "leaves F + 1");
+  }
+}
+
+// The wait itself: a second thread that opens the first work while the
+// opening write runs returns only once F + 1 is on disk.
+void aSecondThreadOpeningDuringTheWriteSeesTheCount() {
+  Directory directory;
+  RNSkCompatibilityGuardFile plain(directory.path);
+  RNSkCompatibilityAttempt attempt;
+  std::thread second;
+  std::atomic<int> seen{-1};
+  bool armed = false;
+  bool started = false;
+  RNSkCompatibilityGuardFile file(directory.path, [&]() {
+    if (!armed || started) {
+      return;
+    }
+    started = true;
+    second = std::thread([&]() {
+      attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+      seen.store(recorded(plain));
+    });
+  });
+  plain.write({"1.0 (1)", 1});
+  const auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  attempt.beginCreation(file, decision.record);
+  attempt.endCreation(true);
+  armed = true;
+  attempt.openFirstWork(RNSkCompatibilityWork::WindowFrame);
+  second.join();
+  expect(seen.load() == 2,
+         "a thread that opens the first work while the opening write runs "
+         "returns only once F + 1 is on disk");
 }
 
 } // namespace
@@ -1115,6 +1420,14 @@ int main() {
   aCorePhoneNeverResolvesTheConfiguration();
   theFirstWorkIsPublishedOnlyOnceItsCountIsOnDisk();
   aWindowWhoseOpeningWriteFailsIsNeverPublished();
+  rowOffscreenFinishedClosesTheWindowWithoutSettling();
+  rowFirstWorkAgainFromAWindowFrame();
+  anOffscreenDrawAfterAWindowLeavesTheWindowOpen();
+  rowOffscreenFinishedWhilePrecompiling();
+  anOffscreenDrawFirstThenTwoWindowDeathsStopTheLevel();
+  anOffscreenOnlyProcessKeepsTheCountItFound();
+  theRemainingTransitions();
+  aSecondThreadOpeningDuringTheWriteSeesTheCount();
   if (failures > 0) {
     std::fprintf(stderr, "%d expectation(s) failed\n", failures);
     return 1;

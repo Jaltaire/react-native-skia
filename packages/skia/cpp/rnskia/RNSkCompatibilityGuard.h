@@ -296,17 +296,24 @@ enum class RNSkCompatibilityWork {
  - first work: from the first of the first window surface made (before Dawn
    configures it, which creates the swapchain) and the first draw recording
    snapped (where Graphite starts compiling its pipelines), until a watched
-   draw has finished: a window frame submitted, presented on a device that
-   was not lost, and reported done by the GPU, or an offscreen surface's
-   draws reported done by the GPU. An upload, a readback, or a surface's
-   first clear neither opens the window by being submitted nor settles it.
+   window frame has finished: submitted, presented on a device that was not
+   lost, and reported done by the GPU. An offscreen surface's draws reported
+   done by the GPU close the window only while no window surface has been
+   made and no window frame snapped, and never end the attempt: the first
+   window surface made or window frame snapped after them opens the window
+   again, so that the first window's swapchain, first image, and first frame
+   are counted whatever offscreen work finished before them. An upload, a
+   readback, or a surface's first clear is never watched.
 
  The record holds the count this launch found (F) while no window is open,
- F + 1 while any is, and nothing once the attempt has settled, which takes
- every counted window having closed after a finished first work: a launch
+ F + 1 while any is, and nothing once the attempt has settled, which takes a
+ finished window frame and every counted window having closed: a launch
  that dies in what is left of the precompile after its first frame counts,
- so a driver that faults there at every launch is stopped too. The file is
- written only when the value it should hold changes.
+ so a driver that faults there at every launch is stopped too. A process
+ that only ever draws offscreen never settles: its record keeps the count
+ the launch found, nothing on a launch that found none, until the app's
+ version changes. The file is written only when the value it should hold
+ changes.
 
  | State             | Entered by                                   | Record  | A death here: the next launch finds                    |
  |-------------------|----------------------------------------------|---------|--------------------------------------------------------|
@@ -315,21 +322,35 @@ enum class RNSkCompatibilityWork {
  | Created           | endCreation(true), no precompile running     | F       | F: not counted (a launch that never draws)             |
  | Created + P       | beginPrecompile, or endCreation(true) with P | F + 1   | F + 1: counted (a fault while compiling stored ones)   |
  | FirstWork         | openFirstWork, or watch of a draw            | F + 1   | F + 1: counted (swapchain, first image, first compile) |
- | FirstWorkFinished | the watched draw finished while P runs       | F + 1   | F + 1: counted (a fault in what is left of P)          |
- | Settled           | the watched draw finished, or P ended after  | none    | nothing: the attempt succeeded                         |
+ | OffscreenFinished | the watched offscreen draw finished, with no | F       | F: not counted (no window open)                        |
+ |                   | window surface made nor window frame snapped |         |                                                        |
+ | OffscreenFinished | the same while P runs                        | F + 1   | F + 1: counted (a fault in what is left of P)          |
+ |   + P             |                                              |         |                                                        |
+ | FirstWork again   | a window surface made, or a window frame     | F + 1   | F + 1: counted (swapchain, first image, first frame)   |
+ |                   | snapped or submitted, in OffscreenFinished   |         |                                                        |
+ | FirstWorkFinished | the watched window frame finished while P    | F + 1   | F + 1: counted (a fault in what is left of P)          |
+ |                   | runs                                         |         |                                                        |
+ | Settled           | the watched window frame finished, or P      | none    | nothing: the attempt succeeded                         |
+ |                   | ended after it                               |         |                                                        |
  | Failed            | a watched draw failed, or P ended on a lost  | F + 1   | F + 1: counted                                         |
  |                   | device                                       |         |                                                        |
- | NotTried          | endCreation(false), or beginCreation failed  | F       | F: the device was never used                           |
+ | NotTried          | endCreation(false), or beginCreation failed  | F, or   | F: the device was never used (F + 1 when the count     |
+ |                   |                                              | F + 1   | could not be put back, the conservative side)          |
  | Stopped           | a write failed after creation                | as left | F or F + 1, never less than F                          |
 
  Settled, Failed, NotTried, and Stopped are the phase Finished: the attempt
- watches nothing more and touches the record no more. Within FirstWork, a
- submission of a window frame or an offscreen draw becomes the watched one
- when none is (watch); a watched submission that carried no work (every
- recording rejected) or a window frame dropped before its present stops
- being watched (unwatch) and the next one is watched, with no write: a
- canvas whose batches are all rejected keeps the window open, raises
- nothing more, and settles nothing.
+ watches nothing more and touches the record no more: when one is reached
+ while P runs, P's end writes nothing. Within FirstWork, a submission of a
+ window frame or an offscreen draw becomes the watched one when none is
+ (watch); a watched submission that carried no work (every recording
+ rejected) or a window frame dropped before its present stops being watched
+ (unwatch) and the next one is watched, with no write: a canvas whose
+ batches are all rejected keeps the window open, raises nothing more, and
+ settles nothing. An offscreen draw that finishes after a window surface was
+ made or a window frame snapped leaves the window open, and from then on
+ only a window frame is watched; in OffscreenFinished an offscreen draw opens
+ nothing and is not watched. A device lost in FirstWork with nothing watched
+ leaves the window open, so the launch counts when it ends, as in Failed.
 
  The first-work window is published (the phase becomes FirstWork) only once
  F + 1 is on disk. The check that lets a thread go on without the mutex sees
@@ -338,7 +359,8 @@ enum class RNSkCompatibilityWork {
 
  Every transition is taken under the attempt's mutex. A process that never
  begins (every device with a core adapter) reads one atomic value per
- submission, per draw snapped, per window surface made, and per precompile.
+ submission, per draw snapped, per window surface made, and per precompile;
+ one whose attempt has settled or stopped reads the same.
  */
 class RNSkCompatibilityAttempt {
 public:
@@ -349,7 +371,12 @@ public:
     // precompile runs.
     AwaitingFirstWork,
     FirstWork,
-    // The watched draw finished while the precompile still runs.
+    // The watched offscreen draw finished before any window surface was
+    // made or window frame snapped: the record holds F, or F + 1 while a
+    // precompile runs, and only a window surface or a window frame opens
+    // the first-work window again.
+    OffscreenFinished,
+    // The watched window frame finished while the precompile still runs.
     FirstWorkFinished,
     Finished,
   };
@@ -453,15 +480,18 @@ public:
   }
 
   /**
-   Opens the first-work window, before the first window surface is made or
-   the first draw recording is snapped. True when this call opened it.
+   Opens the first-work window before a window surface is made (`work`
+   WindowFrame) or a draw recording is snapped (`work` the kind of the draw):
+   the first of them opens it, and once an offscreen draw has finished only a
+   window surface or a window frame opens it again. Other work opens
+   nothing. True when this call opened it.
    */
-  bool openFirstWork() {
-    if (phase() != Phase::AwaitingFirstWork) {
+  bool openFirstWork(RNSkCompatibilityWork work) {
+    if (!mayOpen(phase(), work)) {
       return false;
     }
     std::lock_guard<std::mutex> lock(_mutex);
-    return openFirstWorkLocked();
+    return openFirstWorkLocked(work);
   }
 
   /**
@@ -477,14 +507,13 @@ public:
       return false;
     }
     const auto current = phase();
-    if (current != Phase::AwaitingFirstWork && current != Phase::FirstWork) {
+    if (current != Phase::FirstWork && !mayOpen(current, work)) {
       return false;
     }
     std::lock_guard<std::mutex> lock(_mutex);
-    if (phase() == Phase::AwaitingFirstWork) {
-      openFirstWorkLocked();
-    }
-    if (phase() != Phase::FirstWork || _watching) {
+    openFirstWorkLocked(work);
+    if (phase() != Phase::FirstWork || _watching ||
+        (work == RNSkCompatibilityWork::OffscreenDraw && _offscreenFinished)) {
       return false;
     }
     _watching = true;
@@ -548,17 +577,44 @@ public:
 private:
   static bool precompileMayBegin(Phase phase) {
     return phase == Phase::Creating || phase == Phase::AwaitingFirstWork ||
-           phase == Phase::FirstWork;
+           phase == Phase::FirstWork || phase == Phase::OffscreenFinished;
   }
 
-  bool openFirstWorkLocked() {
-    if (phase() != Phase::AwaitingFirstWork) {
+  // Whether `work` may open the first-work window, or mark the first window
+  // seen, in `phase`: read without the mutex, so that a process past its
+  // first work (and every device with a core adapter) only loads the phase.
+  bool mayOpen(Phase phase, RNSkCompatibilityWork work) const {
+    if (work == RNSkCompatibilityWork::Other) {
+      return false;
+    }
+    if (phase == Phase::AwaitingFirstWork) {
+      return true;
+    }
+    return work == RNSkCompatibilityWork::WindowFrame &&
+           (phase == Phase::OffscreenFinished ||
+            (phase == Phase::FirstWork &&
+             !_windowSeen.load(std::memory_order_acquire)));
+  }
+
+  // Opens the first-work window for `work` from AwaitingFirstWork, or for a
+  // window from OffscreenFinished; marks a window seen in FirstWork. The
+  // window is published only once F + 1 is on disk.
+  bool openFirstWorkLocked(RNSkCompatibilityWork work) {
+    const bool window = work == RNSkCompatibilityWork::WindowFrame;
+    if (window && phase() == Phase::FirstWork) {
+      _windowSeen.store(true, std::memory_order_release);
+      return false;
+    }
+    if (!mayOpen(phase(), work)) {
       return false;
     }
     _watching = false;
     if (!storeValueLocked(_found + 1)) {
       _phase.store(Phase::Finished, std::memory_order_release);
       return false;
+    }
+    if (window) {
+      _windowSeen.store(true, std::memory_order_release);
     }
     _phase.store(Phase::FirstWork, std::memory_order_release);
     return true;
@@ -567,6 +623,17 @@ private:
   bool settleLocked() {
     if (!_workDone || (_watchedWork == RNSkCompatibilityWork::WindowFrame &&
                        !_presented)) {
+      return false;
+    }
+    if (_watchedWork == RNSkCompatibilityWork::OffscreenDraw) {
+      // Not the end of the attempt: a window surface may still come, and its
+      // swapchain, first image, and first frame are counted when it does.
+      _watching = false;
+      _offscreenFinished = true;
+      if (!_windowSeen.load(std::memory_order_acquire)) {
+        _phase.store(Phase::OffscreenFinished, std::memory_order_release);
+        storeOrStopLocked();
+      }
       return false;
     }
     if (_precompiling) {
@@ -622,6 +689,12 @@ private:
   bool _precompileBegun = false;
   bool _precompiling = false;
   bool _watching = false;
+  // A window surface was made or a window frame snapped or submitted: an
+  // offscreen draw no longer closes the window. Read without the mutex by
+  // mayOpen, written under it.
+  std::atomic<bool> _windowSeen{false};
+  // The watched offscreen draw finished: only a window frame is watched now.
+  bool _offscreenFinished = false;
   RNSkCompatibilityWork _watchedWork = RNSkCompatibilityWork::Other;
   bool _workDone = false;
   bool _presented = false;

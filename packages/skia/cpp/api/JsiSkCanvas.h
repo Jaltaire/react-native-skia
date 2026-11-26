@@ -515,7 +515,9 @@ public:
       auto snapshot = _surface->makeImageSnapshot();
       if (auto *recorder = _surface->recorder()) {
         DawnContext::getInstance().submitRecording(
-            DawnContext::snapDraws(recorder).get(),
+            DawnContext::snapDraws(recorder,
+                                   RNSkCompatibilityWork::OffscreenDraw)
+                .get(),
             skgpu::graphite::SyncToCpu::kNo,
             RNSkCompatibilityWork::OffscreenDraw);
       }

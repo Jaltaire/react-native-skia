@@ -61,7 +61,8 @@ void RNSkWindowSurface::attach(void *nativeHandle, int width, int height,
   // configureSurface) and acquires its first image at the first frame, both
   // before anything is submitted: on a compatibility device the attempt's
   // first-work window opens here (see RNSkCompatibilityAttempt).
-  RNSkCompatibilityAttempt::process().openFirstWork();
+  RNSkCompatibilityAttempt::process().openFirstWork(
+      RNSkCompatibilityWork::WindowFrame);
   _surface = context->MakeWGPUSurface(nativeHandle);
   if (!_surface) {
     RNSkLogger::logToConsole("Could not create a surface over the window");
@@ -301,7 +302,8 @@ bool RNSkWindowSurface::presentImage(const sk_sp<SkImage> &image) {
     return false;
   }
   surface->getCanvas()->drawImage(image, 0, 0);
-  auto recording = DawnContext::snapDraws(_recorder);
+  auto recording =
+      DawnContext::snapDraws(_recorder, RNSkCompatibilityWork::WindowFrame);
   if (!recording) {
     throw std::runtime_error("Failed to create graphite recording");
   }
