@@ -195,6 +195,8 @@ public:
     auto info = image->imageInfo().makeDimensions(srcRect.size());
     {
       std::lock_guard<std::mutex> lock(_mutex);
+      const bool firstWork =
+          RNSkCompatibilityAttempt::process().beginFirstWork(false);
       _pendingReadbacks.fetch_add(1, std::memory_order_acq_rel);
       fGraphiteContext->asyncRescaleAndReadPixels(
           image.get(), info, srcRect, SkImage::RescaleGamma::kSrc,
@@ -208,6 +210,9 @@ public:
           },
           request);
       fGraphiteContext->submit();
+      if (firstWork) {
+        watchFirstWorkLocked();
+      }
     }
     wakeReadbackPoller();
   }
@@ -313,35 +318,73 @@ public:
   // Replays the recordings, in order, onto the target surface (a deferred
   // canvas target) and submits them as one batch. A recording Graphite
   // rejects is logged and skipped; the others are still submitted.
-  void
+  // `presents` says the batch is a window frame its caller presents next.
+  // Returns whether the batch is the process's first work on a
+  // compatibility device (see RNSkCompatibilityAttempt): its caller then
+  // reports the present.
+  bool
   insertRecordings(const std::vector<skgpu::graphite::Recording *> &recordings,
-                   SkSurface *targetSurface) {
-    std::lock_guard<std::mutex> lock(_mutex);
-    for (auto *recording : recordings) {
-      skgpu::graphite::InsertRecordingInfo info;
-      info.fRecording = recording;
-      info.fTargetSurface = targetSurface;
-      auto status = fGraphiteContext->insertRecording(info);
-      // InsertStatus converts to true on success.
-      if (!static_cast<bool>(status)) {
-        RNSkLogger::logToConsole(
-            "Graphite rejected a recording (InsertStatus %d): %s",
-            static_cast<int>(
-                static_cast<skgpu::graphite::InsertStatus::V>(status)),
-            status.message().c_str());
+                   SkSurface *targetSurface, bool presents = false) {
+    bool firstWork = false;
+    {
+      std::lock_guard<std::mutex> lock(_mutex);
+      firstWork = RNSkCompatibilityAttempt::process().beginFirstWork(presents);
+      bool inserted = false;
+      for (auto *recording : recordings) {
+        skgpu::graphite::InsertRecordingInfo info;
+        info.fRecording = recording;
+        info.fTargetSurface = targetSurface;
+        auto status = fGraphiteContext->insertRecording(info);
+        // InsertStatus converts to true on success.
+        if (!static_cast<bool>(status)) {
+          RNSkLogger::logToConsole(
+              "Graphite rejected a recording (InsertStatus %d): %s",
+              static_cast<int>(
+                  static_cast<skgpu::graphite::InsertStatus::V>(status)),
+              status.message().c_str());
+        } else {
+          inserted = true;
+        }
+      }
+      if (firstWork && !inserted) {
+        RNSkCompatibilityAttempt::process().cancelFirstWork();
+        firstWork = false;
+      }
+      fGraphiteContext->submit();
+      if (firstWork) {
+        watchFirstWorkLocked();
       }
     }
-    fGraphiteContext->submit();
+    if (firstWork) {
+      wakeReadbackPoller();
+    }
+    return firstWork;
   }
 
-  void submitRecording(
+  bool submitRecording(
       skgpu::graphite::Recording *recording,
-      skgpu::graphite::SyncToCpu syncToCpu = skgpu::graphite::SyncToCpu::kNo) {
-    std::lock_guard<std::mutex> lock(_mutex);
-    skgpu::graphite::InsertRecordingInfo info;
-    info.fRecording = recording;
-    fGraphiteContext->insertRecording(info);
-    fGraphiteContext->submit(syncToCpu);
+      skgpu::graphite::SyncToCpu syncToCpu = skgpu::graphite::SyncToCpu::kNo,
+      bool presents = false) {
+    bool firstWork = false;
+    {
+      std::lock_guard<std::mutex> lock(_mutex);
+      firstWork = RNSkCompatibilityAttempt::process().beginFirstWork(presents);
+      skgpu::graphite::InsertRecordingInfo info;
+      info.fRecording = recording;
+      if (!static_cast<bool>(fGraphiteContext->insertRecording(info)) &&
+          firstWork) {
+        RNSkCompatibilityAttempt::process().cancelFirstWork();
+        firstWork = false;
+      }
+      fGraphiteContext->submit(syncToCpu);
+      if (firstWork) {
+        watchFirstWorkLocked();
+      }
+    }
+    if (firstWork) {
+      wakeReadbackPoller();
+    }
+    return firstWork;
   }
 
   // Create offscreen surface
@@ -725,6 +768,24 @@ private:
   std::mutex _pollerMutex;
   std::condition_variable _pollerCondition;
 
+  // The GPU's report that the process's first work on a compatibility device
+  // is done (see RNSkCompatibilityAttempt). The readback poller ticks the
+  // device until it comes, so it comes even when nothing else is submitted.
+  void watchFirstWorkLocked() {
+    _pendingReadbacks.fetch_add(1, std::memory_order_acq_rel);
+    backendContext.fQueue.OnSubmittedWorkDone(
+        wgpu::CallbackMode::AllowSpontaneous,
+        [](wgpu::QueueWorkDoneStatus, wgpu::StringView) {
+          getInstance()._pendingReadbacks.fetch_sub(1,
+                                                    std::memory_order_acq_rel);
+          if (RNSkCompatibilityAttempt::process().noteWorkDone()) {
+            RNSkLogger::logToConsole(
+                "React Native Skia's first work at the WebGPU compatibility "
+                "feature level finished; the attempt is settled.");
+          }
+        });
+  }
+
   void wakeReadbackPoller() {
     std::call_once(_pollerOnce, [this]() {
       std::thread([this]() { pollReadbacks(); }).detach();
@@ -825,6 +886,7 @@ private:
           "React Native Skia could not create its Graphite context on the "
           "GPU device.");
     }
+    RNSkCompatibilityAttempt::process().endCreation(true);
 
     if (_pipelineStorage != nullptr) {
       startPrecompiling();

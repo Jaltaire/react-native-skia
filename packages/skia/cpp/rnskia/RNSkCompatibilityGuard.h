@@ -191,44 +191,151 @@ private:
 };
 
 /**
- An attempt in flight: armed once its record is on disk, right before the
- compatibility device is created, and settled by the first frame presented
- on that device, which removes the record. The process has one (process());
- a process that never arms it (every device with a core adapter) only ever
- reads one atomic flag per presented frame.
+ The process's attempt at the compatibility level, counted only while the
+ driver is exercised for the first time, in two windows:
+ - creation: from just before the device is requested until its Graphite
+   context exists;
+ - first work: from just before the first work is submitted to the device
+   (a window frame, an offscreen surface, or a readback) until that work is
+   known finished (a window frame's present, and the GPU's report that the
+   work is done).
+ Each window records one more unfinished attempt than the process found, and
+ puts the record back when it closes; a finished first work removes it. A
+ process that never draws neither counts nor resets. A process that never
+ begins (every device with a core adapter) only reads one atomic value per
+ submission.
  */
 class RNSkCompatibilityAttempt {
 public:
+  enum class Phase {
+    Unused,
+    Creating,
+    AwaitingFirstWork,
+    FirstWork,
+    Finished,
+  };
+
   static RNSkCompatibilityAttempt &process() {
     static auto *attempt = new RNSkCompatibilityAttempt();
     return *attempt;
   }
 
-  void arm(const RNSkCompatibilityGuardFile &file) {
-    {
-      std::lock_guard<std::mutex> lock(_mutex);
-      _path = file.path();
-    }
-    _armed.store(true, std::memory_order_release);
-  }
+  Phase phase() const { return _phase.load(std::memory_order_acquire); }
 
-  /** A frame was presented: the first one settles an armed attempt. */
-  bool notePresented() {
-    if (!_armed.load(std::memory_order_acquire) ||
-        !_armed.exchange(false, std::memory_order_acq_rel)) {
+  /**
+   Opens the creation window: records `counted` (one more unfinished attempt
+   than the process found). False when it cannot be recorded.
+   */
+  bool beginCreation(const RNSkCompatibilityGuardFile &file,
+                     const RNSkCompatibilityAttempts &counted) {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (phase() != Phase::Unused) {
       return false;
     }
-    std::lock_guard<std::mutex> lock(_mutex);
-    ::unlink(_path.c_str());
+    _file = file;
+    _counted = counted;
+    if (!_file->write(_counted)) {
+      _phase.store(Phase::Finished, std::memory_order_release);
+      return false;
+    }
+    _phase.store(Phase::Creating, std::memory_order_release);
     return true;
   }
 
-  bool armed() const { return _armed.load(std::memory_order_acquire); }
+  /** Closes the creation window: the device and its context exist, or not. */
+  void endCreation(bool created) {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (phase() != Phase::Creating) {
+      return;
+    }
+    restoreLocked();
+    _phase.store(created ? Phase::AwaitingFirstWork : Phase::Finished,
+                 std::memory_order_release);
+  }
+
+  /**
+   Opens the first-work window before the process's first submission to the
+   device. `presents` says whether that work is a window frame, which also
+   has to be presented. True when this submission is the one watched.
+   */
+  bool beginFirstWork(bool presents) {
+    if (phase() != Phase::AwaitingFirstWork) {
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (phase() != Phase::AwaitingFirstWork) {
+      return false;
+    }
+    if (!_file->write(_counted)) {
+      _phase.store(Phase::Finished, std::memory_order_release);
+      return false;
+    }
+    _presents = presents;
+    _workDone = false;
+    _presented = false;
+    _phase.store(Phase::FirstWork, std::memory_order_release);
+    return true;
+  }
+
+  /**
+   The watched submission carried no work after all (every recording was
+   rejected): the record is put back, and the next submission is watched.
+   */
+  void cancelFirstWork() {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (phase() != Phase::FirstWork) {
+      return;
+    }
+    restoreLocked();
+    _phase.store(Phase::AwaitingFirstWork, std::memory_order_release);
+  }
+
+  /** The GPU finished the watched work. True when that settles the attempt. */
+  bool noteWorkDone() {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (phase() != Phase::FirstWork) {
+      return false;
+    }
+    _workDone = true;
+    return settleLocked();
+  }
+
+  /** The watched window frame was presented. True when that settles it. */
+  bool notePresented() {
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (phase() != Phase::FirstWork) {
+      return false;
+    }
+    _presented = true;
+    return settleLocked();
+  }
 
 private:
-  std::atomic<bool> _armed{false};
+  void restoreLocked() {
+    const int before = _counted.unfinished - 1;
+    if (before <= 0) {
+      _file->remove();
+    } else if (!_file->write({_counted.appVersion, before})) {
+      _file->remove();
+    }
+  }
+
+  bool settleLocked() {
+    if (!_workDone || (_presents && !_presented)) {
+      return false;
+    }
+    _file->remove();
+    _phase.store(Phase::Finished, std::memory_order_release);
+    return true;
+  }
+
+  std::atomic<Phase> _phase{Phase::Unused};
   std::mutex _mutex;
-  std::string _path;
+  std::optional<RNSkCompatibilityGuardFile> _file;
+  RNSkCompatibilityAttempts _counted;
+  bool _presents = false;
+  bool _workDone = false;
+  bool _presented = false;
 };
 
 } // namespace RNSkia

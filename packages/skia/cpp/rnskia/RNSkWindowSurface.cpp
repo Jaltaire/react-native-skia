@@ -24,9 +24,8 @@ namespace RNSkia {
 
 namespace {
 
-// The first frame presented on a compatibility device settles the attempt
-// recorded before the device was created (see RNSkCompatibilityAttempt); on
-// any other device this reads one flag.
+// The present of the process's first work on a compatibility device (see
+// RNSkCompatibilityAttempt).
 void notePresentedForCompatibilityGuard() {
   if (RNSkCompatibilityAttempt::process().notePresented()) {
     RNSkLogger::logToConsole(
@@ -264,12 +263,15 @@ bool RNSkWindowSurface::presentRecordings(
   }
   // A recording Graphite rejects is logged there and dropped: it would be
   // rejected again on every frame, and the frames behind it would never come.
-  DawnContext::getInstance().insertRecordings(recordings, surface.get());
+  const bool firstWork = DawnContext::getInstance().insertRecordings(
+      recordings, surface.get(), /* presents= */ true);
 #ifdef __APPLE__
   dawn::native::metal::WaitForCommandsToBeScheduled(_device.Get());
 #endif
   _surface.Present();
-  notePresentedForCompatibilityGuard();
+  if (firstWork) {
+    notePresentedForCompatibilityGuard();
+  }
   return true;
 }
 
@@ -296,12 +298,15 @@ bool RNSkWindowSurface::presentImage(const sk_sp<SkImage> &image) {
   if (!recording) {
     throw std::runtime_error("Failed to create graphite recording");
   }
-  DawnContext::getInstance().submitRecording(recording.get());
+  const bool firstWork = DawnContext::getInstance().submitRecording(
+      recording.get(), skgpu::graphite::SyncToCpu::kNo, /* presents= */ true);
 #ifdef __APPLE__
   dawn::native::metal::WaitForCommandsToBeScheduled(_device.Get());
 #endif
   _surface.Present();
-  notePresentedForCompatibilityGuard();
+  if (firstWork) {
+    notePresentedForCompatibilityGuard();
+  }
   return true;
 }
 

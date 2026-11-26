@@ -45,28 +45,60 @@ struct Directory {
   }
 };
 
+/** Where a simulated launch on a device without a core adapter ends. */
+enum class Ending {
+  // The process ends inside the device's creation (a driver crash or hang).
+  InCreation,
+  // The device and its context are created, and nothing is ever submitted.
+  NeverDraws,
+  // The process ends inside its first work on the device.
+  InFirstWork,
+  // The first work is a window frame, finished and presented.
+  FinishesWindowFrame,
+  // The first work is offscreen, finished.
+  FinishesOffscreen,
+};
+
 /**
- One launch on a device without a core adapter, as the library runs it:
- the guard decides, records the attempt and arms it, and the launch then
- either presents its first frame or ends before it. Returns the plan.
+ One launch in a process of its own, through the attempt's shipped sequence:
+ the guard decides, the creation window opens and closes, and the first-work
+ window opens and closes, unless the launch ends inside one. Returns the plan.
  */
 RNSkCompatibilityPlan launch(const RNSkCompatibilityGuardFile &file,
-                             const std::string &appVersion,
-                             bool presentsFirstFrame) {
+                             const std::string &appVersion, Ending ending) {
   auto decision =
       decideCompatibilityAttempt(file.read(), appVersion, file.usable());
   if (decision.plan != RNSkCompatibilityPlan::Attempt) {
     return decision.plan;
   }
-  if (!file.write(decision.record)) {
+  RNSkCompatibilityAttempt attempt;
+  if (!attempt.beginCreation(file, decision.record)) {
     return RNSkCompatibilityPlan::StopUnrecorded;
   }
-  RNSkCompatibilityAttempt attempt;
-  attempt.arm(file);
-  if (presentsFirstFrame) {
+  if (ending == Ending::InCreation) {
+    return decision.plan;
+  }
+  attempt.endCreation(true);
+  if (ending == Ending::NeverDraws) {
+    return decision.plan;
+  }
+  const bool window = ending != Ending::FinishesOffscreen;
+  if (!attempt.beginFirstWork(window)) {
+    return decision.plan;
+  }
+  if (ending == Ending::InFirstWork) {
+    return decision.plan;
+  }
+  attempt.noteWorkDone();
+  if (window) {
     attempt.notePresented();
   }
-  return RNSkCompatibilityPlan::Attempt;
+  return decision.plan;
+}
+
+int recorded(const RNSkCompatibilityGuardFile &file) {
+  auto record = file.read();
+  return record ? record->unfinished : 0;
 }
 
 void ruleAttemptsWithoutARecord() {
@@ -160,61 +192,140 @@ void fileFailsCleanlyWhereItCannotWrite() {
   RNSkCompatibilityGuardFile readOnly(directory.path);
   expect(!readOnly.write({"1.0 (1)", 1}),
          "a write into an unwritable directory fails");
-  expect(launch(readOnly, "1.0 (1)", true) ==
+  expect(launch(readOnly, "1.0 (1)", Ending::FinishesWindowFrame) ==
              RNSkCompatibilityPlan::StopUnrecorded,
          "a launch that cannot record its attempt does not try the level");
 }
 
-void twoUnfinishedLaunchesInARowStopTheLevel() {
+void twoCrashesInCreationStopTheLevel() {
   Directory directory;
   RNSkCompatibilityGuardFile file(directory.path);
-  expect(launch(file, "1.0 (1)", false) == RNSkCompatibilityPlan::Attempt,
-         "launch 1 tries the level and ends before its first frame");
-  expect(launch(file, "1.0 (1)", false) == RNSkCompatibilityPlan::Attempt,
-         "launch 2 tries it again and ends before its first frame");
-  expect(launch(file, "1.0 (1)", true) ==
+  expect(launch(file, "1.0 (1)", Ending::InCreation) ==
+             RNSkCompatibilityPlan::Attempt,
+         "launch 1 tries the level and ends inside the device's creation");
+  expect(recorded(file) == 1, "and counts once");
+  expect(launch(file, "1.0 (1)", Ending::InCreation) ==
+             RNSkCompatibilityPlan::Attempt,
+         "launch 2 tries it again and ends there too");
+  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
              RNSkCompatibilityPlan::StopUnfinished,
          "launch 3 does not try the level");
-  expect(launch(file, "1.0 (1)", true) ==
-             RNSkCompatibilityPlan::StopUnfinished,
-         "nor does any later launch on that version");
-  expect(launch(file, "1.1 (2)", true) == RNSkCompatibilityPlan::Attempt,
+  expect(launch(file, "1.1 (2)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::Attempt,
          "the next version tries it again");
   expect(!file.read().has_value(),
-         "and its first presented frame settles the attempt");
+         "and its finished first work settles the attempt");
+}
+
+void twoCrashesInFirstWorkStopTheLevel() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  launch(file, "1.0 (1)", Ending::InFirstWork);
+  expect(recorded(file) == 1,
+         "a launch that ends inside its first work counts once");
+  launch(file, "1.0 (1)", Ending::InFirstWork);
+  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::StopUnfinished,
+         "two in a row stop the level");
+}
+
+void aCrashInEachWindowStopsTheLevel() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  launch(file, "1.0 (1)", Ending::InCreation);
+  launch(file, "1.0 (1)", Ending::InFirstWork);
+  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::StopUnfinished,
+         "a crash in creation and one in the first work, in a row, stop it");
+}
+
+void aProcessThatNeverDrawsNeitherCountsNorResets() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  for (int i = 0; i < 3; i++) {
+    launch(file, "1.0 (1)", Ending::NeverDraws);
+  }
+  expect(!file.read().has_value(),
+         "three launches that never draw leave no record: a background or "
+         "headless start, a restore without a canvas, a canvas-free screen");
+  launch(file, "1.0 (1)", Ending::InFirstWork);
+  launch(file, "1.0 (1)", Ending::NeverDraws);
+  expect(recorded(file) == 1,
+         "one that never draws keeps the count it found");
+  launch(file, "1.0 (1)", Ending::NeverDraws);
+  launch(file, "1.0 (1)", Ending::InFirstWork);
+  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::StopUnfinished,
+         "and does not rescue a crashing driver either");
+}
+
+void offscreenFirstWorkSettlesWithoutAPresent() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  launch(file, "1.0 (1)", Ending::InFirstWork);
+  launch(file, "1.0 (1)", Ending::FinishesOffscreen);
+  expect(!file.read().has_value(),
+         "an app that only renders offscreen settles when the GPU finishes "
+         "its first work");
+}
+
+void aWindowFrameNeedsItsPresentToo() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  RNSkCompatibilityAttempt attempt;
+  attempt.beginCreation(file, decision.record);
+  attempt.endCreation(true);
+  expect(attempt.beginFirstWork(true), "the first window frame is watched");
+  expect(!attempt.noteWorkDone(),
+         "a window frame whose work finished is not settled before its "
+         "present");
+  expect(recorded(file) == 1, "and stays counted until then");
+  expect(attempt.notePresented(), "its present settles it");
+  expect(!file.read().has_value(), "and removes the record");
+  expect(!attempt.beginFirstWork(false), "later work is not watched");
+}
+
+void aBatchWithNoWorkIsNotTheFirstWork() {
+  Directory directory;
+  RNSkCompatibilityGuardFile file(directory.path);
+  file.write({"1.0 (1)", 1});
+  auto decision = decideCompatibilityAttempt(file.read(), "1.0 (1)", true);
+  RNSkCompatibilityAttempt attempt;
+  attempt.beginCreation(file, decision.record);
+  attempt.endCreation(true);
+  expect(recorded(file) == 1, "a created device puts the count back");
+  expect(attempt.beginFirstWork(true), "a submission opens the window");
+  expect(recorded(file) == 2, "and counts");
+  attempt.cancelFirstWork();
+  expect(recorded(file) == 1,
+         "a submission whose every recording was rejected puts it back");
+  expect(attempt.beginFirstWork(false), "and the next one is watched");
 }
 
 void aSuccessResetsTheCount() {
   Directory directory;
   RNSkCompatibilityGuardFile file(directory.path);
-  launch(file, "1.0 (1)", false);
-  launch(file, "1.0 (1)", true);
+  launch(file, "1.0 (1)", Ending::InFirstWork);
+  launch(file, "1.0 (1)", Ending::FinishesWindowFrame);
   expect(!file.read().has_value(),
-         "a launch that presents its first frame leaves no record");
-  expect(launch(file, "1.0 (1)", false) == RNSkCompatibilityPlan::Attempt,
+         "a launch whose first work finishes leaves no record");
+  expect(launch(file, "1.0 (1)", Ending::InFirstWork) ==
+             RNSkCompatibilityPlan::Attempt,
          "an unfinished launch after a good one tries the level");
-  expect(launch(file, "1.0 (1)", true) == RNSkCompatibilityPlan::Attempt,
+  expect(launch(file, "1.0 (1)", Ending::FinishesWindowFrame) ==
+             RNSkCompatibilityPlan::Attempt,
          "and so does the next: one unfinished launch between good ones "
          "never stops it");
 }
 
-void onlyAnArmedAttemptIsSettled() {
-  Directory directory;
-  RNSkCompatibilityGuardFile file(directory.path);
-  file.write({"1.0 (1)", 1});
+void anUnusedAttemptWatchesNothing() {
   RNSkCompatibilityAttempt attempt;
-  expect(!attempt.armed() && !attempt.notePresented(),
-         "a frame on a process that armed nothing settles nothing");
-  expect(file.read().has_value(),
-         "and leaves any record alone, as on a device with a core adapter");
-  attempt.arm(file);
-  expect(attempt.armed(), "an attempt is armed once its record is written");
-  expect(attempt.notePresented(),
-         "the first frame after arming settles the attempt");
-  expect(!file.read().has_value(), "settling removes the record");
-  file.write({"1.0 (1)", 1});
-  expect(!attempt.notePresented(), "later frames settle nothing");
-  expect(file.read().has_value(), "and touch no file");
+  expect(attempt.phase() == RNSkCompatibilityAttempt::Phase::Unused,
+         "a process on a device with a core adapter never begins an attempt");
+  expect(!attempt.beginFirstWork(true) && !attempt.noteWorkDone() &&
+             !attempt.notePresented(),
+         "and watches no submission");
 }
 
 } // namespace
@@ -228,9 +339,15 @@ int main() {
   recordRoundTripsAndRejectsOtherText();
   fileWritesReadsAndRemoves();
   fileFailsCleanlyWhereItCannotWrite();
-  twoUnfinishedLaunchesInARowStopTheLevel();
+  twoCrashesInCreationStopTheLevel();
+  twoCrashesInFirstWorkStopTheLevel();
+  aCrashInEachWindowStopsTheLevel();
+  aProcessThatNeverDrawsNeitherCountsNorResets();
+  offscreenFirstWorkSettlesWithoutAPresent();
+  aWindowFrameNeedsItsPresentToo();
+  aBatchWithNoWorkIsNotTheFirstWork();
   aSuccessResetsTheCount();
-  onlyAnArmedAttemptIsSettled();
+  anUnusedAttemptWatchesNothing();
   if (failures > 0) {
     std::fprintf(stderr, "%d expectation(s) failed\n", failures);
     return EXIT_FAILURE;

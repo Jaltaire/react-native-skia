@@ -445,10 +445,10 @@ requestDevice(dawn::native::Adapter &nativeAdapter,
 // `listener` is told of the primary device's loss (see DeviceLostListener)
 // and must outlive the device, as must `pipelineStorage` when given.
 // `compatibility` is the app's configuration of the compatibility level. On a
-// device without a core adapter, the attempt at that level is recorded before
-// its device is created and settled by its first presented frame (see
-// RNSkCompatibilityGuard), and the level is not tried after the attempts the
-// guard allows ended before it.
+// device without a core adapter, the attempt at that level is counted while
+// its device is created and while its first work runs (see
+// RNSkCompatibilityAttempt), and the level is not tried after the attempts
+// the guard allows ended inside either.
 inline skgpu::graphite::DawnBackendContext
 createDawnBackendContext(dawn::native::Instance *instance,
                          DeviceLostListener *listener,
@@ -579,7 +579,8 @@ createDawnBackendContext(dawn::native::Instance *instance,
   }
 
   if (matched.featureLevel == RNSkia::RNSkFeatureLevel::Compatibility) {
-    if (!guard || !guardFile.write(guard->record)) {
+    if (!guard || !RNSkia::RNSkCompatibilityAttempt::process().beginCreation(
+                      guardFile, guard->record)) {
       throw std::runtime_error(
           "React Native Skia found the " + adapterInfo.backend + " adapter " +
           adapterInfo.device + " only at the WebGPU compatibility feature "
@@ -587,7 +588,6 @@ createDawnBackendContext(dawn::native::Instance *instance,
           RNSkia::compatibilityStopReason(
               RNSkia::RNSkCompatibilityPlan::StopUnrecorded));
     }
-    RNSkia::RNSkCompatibilityAttempt::process().arm(guardFile);
   }
 
   wgpu::Device device = requestDevice(matchedAdapter, matched.featureLevel,

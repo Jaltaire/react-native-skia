@@ -80,12 +80,13 @@ In an Expo app, set `ios.infoPlist.RNSkiaCompatibilityFeatureLevel` to `false` i
 `Skia.gpu.error` then says that the level is turned off in the app's build settings.
 
 A driver can still fail on that level in a way no app can catch, such as a crash or a hang inside the driver.
-Skia therefore records each attempt at the compatibility level before it creates the device, in a directory of the app's that is kept out of backups, and clears the record when the first frame is presented on that device.
-If two launches in a row on the same app version end before that first frame, Skia stops trying the level on that version: the device renders as it did before the level existed (`Skia.gpu.isAvailable` false, blank canvases), and `Skia.gpu.error` says why.
+Skia therefore counts an attempt at the compatibility level while the driver is exercised for the first time in a process: while the device and its Graphite context are created, and while the first work submitted to the device runs (until a window frame is presented, or until the GPU reports offscreen work finished).
+It keeps the count in a directory of the app's that is kept out of backups, and removes it once that first work is finished.
+If two launches in a row on the same app version end inside those windows, Skia stops trying the level on that version: the device renders as it did before the level existed (`Skia.gpu.isAvailable` false, blank canvases), and `Skia.gpu.error` says why.
 The next app version tries the level again.
-A launch that presents no Skia frame at all counts as one that ended early, so an app whose first screen draws no canvas can stop the level after two such launches.
-If the record cannot be written, Skia does not try the level.
-Devices with a core adapter never read or write the record.
+A launch that never draws (a background start, or one left from a screen without a canvas) neither counts nor resets the count.
+If the count cannot be written, Skia does not try the level.
+Devices with a core adapter never read or write the count.
 
 On a device without Vulkan the app still runs: `Skia.gpu.isAvailable` is false, `Skia.gpu.error` says why, and canvases stay blank.
 An app that has to render on such devices uses [v2](https://wcandillon.github.io/react-native-skia/v2/docs/getting-started/installation/), which renders with OpenGL ES.
