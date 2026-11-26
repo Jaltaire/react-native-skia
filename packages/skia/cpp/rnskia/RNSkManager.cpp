@@ -23,8 +23,15 @@ RNSkManager::RNSkManager(
       _jsCallInvoker(jsCallInvoker),
       _viewApi(std::make_shared<RNSkJsiViewApi>(platformContext)) {
   DawnContext::setPipelineCacheDirectory(platformContext->getCacheDirectory());
+  // Weakly: the resolver outlives this manager (see DawnContext), and must
+  // not keep its platform context alive for the process.
   DawnContext::setCompatibilityConfigResolver(
-      [platformContext]() { return platformContext->getCompatibilityConfig(); });
+      [weakContext = std::weak_ptr<RNSkPlatformContext>(platformContext)]() {
+        if (auto platformContext = weakContext.lock()) {
+          return platformContext->getCompatibilityConfig();
+        }
+        return RNSkCompatibilityConfig{};
+      });
   // The GPU is probed now, once, rather than by whichever view or image call
   // comes first: a device without one (no Vulkan 1.1 on Android) is logged
   // and reported to JS as Skia.gpu, instead of failing in different places

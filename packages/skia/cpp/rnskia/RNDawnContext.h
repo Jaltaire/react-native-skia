@@ -699,7 +699,8 @@ private:
     if (!state.resolver) {
       return []() { return RNSkCompatibilityConfig{}; };
     }
-    return state.resolver;
+    // Moved out: the state keeps nothing of the platform's once claimed.
+    return std::move(state.resolver);
   }
 
   static std::string claimPipelineCacheDirectory() {
