@@ -388,12 +388,14 @@ requestDevice(dawn::native::Adapter &nativeAdapter,
   // At the compatibility level, the adapter's color attachment limit instead
   // of the level's default (see requiredColorAttachments).
   wgpu::Limits requiredLimits{};
-  wgpu::Limits adapterLimits{};
-  adapter.GetLimits(&adapterLimits);
-  if (auto colorAttachments = RNSkia::requiredColorAttachments(
-          featureLevel, adapterLimits.maxColorAttachments)) {
-    requiredLimits.maxColorAttachments = *colorAttachments;
-    desc.requiredLimits = &requiredLimits;
+  if (featureLevel == RNSkia::RNSkFeatureLevel::Compatibility) {
+    wgpu::Limits adapterLimits{};
+    adapter.GetLimits(&adapterLimits);
+    if (auto colorAttachments = RNSkia::requiredColorAttachments(
+            featureLevel, adapterLimits.maxColorAttachments)) {
+      requiredLimits.maxColorAttachments = *colorAttachments;
+      desc.requiredLimits = &requiredLimits;
+    }
   }
   desc.nextInChain = &togglesDesc;
 
