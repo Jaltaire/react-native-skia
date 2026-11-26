@@ -12,6 +12,10 @@ describe("GPU info", () => {
     expect(gpu.backend).toBe(surface.OS === "android" ? "Vulkan" : "Metal");
     expect(typeof gpu.device).toBe("string");
     expect(typeof gpu.description).toBe("string");
-    expect(["core", "compatibility"]).toContain(gpu.featureLevel);
+    if (surface.OS === "ios") {
+      expect(gpu.featureLevel).toBe("core");
+    } else {
+      expect(["core", "compatibility"]).toContain(gpu.featureLevel);
+    }
   });
 });

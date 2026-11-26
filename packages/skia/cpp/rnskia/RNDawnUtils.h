@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include "RNDawnDeviceRequest.h"
 #include "RNDawnFeatureLevel.h"
 #include "RNSkPipelineStorage.h"
 #include "webgpu/webgpu_cpp.h"
@@ -209,16 +210,6 @@ inline std::string describeMissingAdapter(dawn::native::Instance *instance) {
   return message;
 }
 
-inline wgpu::FeatureLevel toWGPUFeatureLevel(RNSkia::RNSkFeatureLevel level) {
-  switch (level) {
-  case RNSkia::RNSkFeatureLevel::Core:
-    return wgpu::FeatureLevel::Core;
-  case RNSkia::RNSkFeatureLevel::Compatibility:
-    return wgpu::FeatureLevel::Compatibility;
-  }
-  return wgpu::FeatureLevel::Core;
-}
-
 // The best adapter on the platform backend (Metal on Apple, Vulkan on
 // Android) at the given feature level, sorted by adapter type (DiscreteGPU >
 // IntegratedGPU > CPU), or nullopt when Dawn has none there.
@@ -229,7 +220,7 @@ findPlatformAdapter(dawn::native::Instance *instance,
 
   wgpu::RequestAdapterOptions options;
   options.backendType = kDefaultBackendType;
-  options.featureLevel = toWGPUFeatureLevel(level);
+  options.featureLevel = RNSkia::toWGPUFeatureLevel(level);
 
   std::vector<dawn::native::Adapter> adapters =
       instance->EnumerateAdapters(&options);
@@ -387,15 +378,14 @@ requestDevice(dawn::native::Adapter &nativeAdapter,
 
   // At the compatibility level, the adapter's color attachment limit instead
   // of the level's default (see requiredColorAttachments).
-  wgpu::Limits requiredLimits{};
-  if (featureLevel == RNSkia::RNSkFeatureLevel::Compatibility) {
-    wgpu::Limits adapterLimits{};
-    adapter.GetLimits(&adapterLimits);
-    if (auto colorAttachments = RNSkia::requiredColorAttachments(
-            featureLevel, adapterLimits.maxColorAttachments)) {
-      requiredLimits.maxColorAttachments = *colorAttachments;
-      desc.requiredLimits = &requiredLimits;
-    }
+  auto requiredLimits =
+      RNSkia::requiredDeviceLimits(featureLevel, [&adapter]() {
+        wgpu::Limits adapterLimits{};
+        adapter.GetLimits(&adapterLimits);
+        return adapterLimits;
+      });
+  if (requiredLimits) {
+    desc.requiredLimits = &*requiredLimits;
   }
   desc.nextInChain = &togglesDesc;
 

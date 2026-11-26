@@ -8,6 +8,7 @@
 
 using RNSkia::chooseAdapter;
 using RNSkia::featureLevelName;
+using RNSkia::featureLevelOfDevice;
 using RNSkia::requestsTransientAttachments;
 using RNSkia::requiredColorAttachments;
 using RNSkia::RNSkFeatureLevel;
@@ -86,6 +87,14 @@ void levelsAreNamedAsSkiaGpuReportsThem() {
          "the compatibility level is named \"compatibility\"");
 }
 
+void deviceLevelFollowsCoreFeaturesAndLimits() {
+  expect(featureLevelOfDevice(true) == RNSkFeatureLevel::Core,
+         "a device with CoreFeaturesAndLimits runs at the core level");
+  expect(featureLevelOfDevice(false) == RNSkFeatureLevel::Compatibility,
+         "a device without CoreFeaturesAndLimits runs at the compatibility "
+         "level");
+}
+
 void coreKeepsTheDefaultColorAttachmentLimit() {
   expect(!requiredColorAttachments(RNSkFeatureLevel::Core, 8).has_value(),
          "a core device keeps the level's default color attachment limit");
@@ -129,6 +138,7 @@ int main() {
   compatibilityAdapterIsChosenWhenCoreHasNone();
   noAdapterAtEitherLevelChoosesNone();
   levelsAreNamedAsSkiaGpuReportsThem();
+  deviceLevelFollowsCoreFeaturesAndLimits();
   coreKeepsTheDefaultColorAttachmentLimit();
   compatibilityRequestsTheAdapterColorAttachmentLimit();
   coreKeepsTransientAttachments();

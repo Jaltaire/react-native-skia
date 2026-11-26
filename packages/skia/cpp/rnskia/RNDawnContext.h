@@ -577,10 +577,8 @@ private:
         probe->info.available = true;
         const auto &device = probe->instance->backendContext.fDevice;
         probe->info.adapter = DawnUtils::describeAdapter(device.GetAdapter());
-        const auto level =
-            device.HasFeature(wgpu::FeatureName::CoreFeaturesAndLimits)
-                ? RNSkFeatureLevel::Core
-                : RNSkFeatureLevel::Compatibility;
+        const auto level = featureLevelOfDevice(
+            device.HasFeature(wgpu::FeatureName::CoreFeaturesAndLimits));
         probe->info.featureLevel = featureLevelName(level);
         if (level == RNSkFeatureLevel::Compatibility) {
           RNSkLogger::logToConsole(

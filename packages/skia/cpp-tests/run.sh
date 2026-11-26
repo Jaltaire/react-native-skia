@@ -37,4 +37,10 @@ for SANITIZER in address,undefined thread; do
     "$ROOT/packages/skia/cpp-tests/RNDawnFeatureLevelTest.cpp" \
     -o "$OUT/RNDawnFeatureLevelTest"
   "$OUT/RNDawnFeatureLevelTest"
+  /usr/bin/clang++ -std=c++20 -O1 -g -fsanitize="$SANITIZER" \
+    -I"$CPP/rnskia" \
+    -I"${DAWN_INCLUDE:-$ROOT/node_modules/react-native-webgpu-dawn/include}" \
+    "$ROOT/packages/skia/cpp-tests/RNDawnDeviceRequestTest.cpp" \
+    -o "$OUT/RNDawnDeviceRequestTest"
+  "$OUT/RNDawnDeviceRequestTest"
 done

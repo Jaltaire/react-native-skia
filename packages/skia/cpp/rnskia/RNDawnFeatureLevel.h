@@ -33,6 +33,16 @@ inline const char *featureLevelName(RNSkFeatureLevel level) {
 }
 
 /**
+ The level a device runs at, from whether it has CoreFeaturesAndLimits: Dawn
+ enables that feature on every device created from a core adapter, and on no
+ other.
+ */
+inline RNSkFeatureLevel featureLevelOfDevice(bool hasCoreFeaturesAndLimits) {
+  return hasCoreFeaturesAndLimits ? RNSkFeatureLevel::Core
+                                  : RNSkFeatureLevel::Compatibility;
+}
+
+/**
  The color attachment limit to request for a device at `level`, or nullopt to
  keep the level's default. At the compatibility level the default is 4, while
  Dawn's own MSAA expand-resolve pipeline declares kDawnExpandResolveColorTargets
