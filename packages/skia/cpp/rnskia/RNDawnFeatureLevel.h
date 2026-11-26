@@ -12,9 +12,9 @@ namespace RNSkia {
  asked first, and a device that has a core adapter renders on it exactly as
  before. Compatibility is asked only when there is none: on drivers that fall
  short of a core limit or feature but meet the compatibility ones (for
- example, a 2D texture limit of 4096 against core's 8192, as on PowerVR Rogue
- GE8300, GE8320, and GE8322). Graphite reads the device's limits and adapts to
- the compatibility ones.
+ example, a 2D texture limit of 4096 against core's 8192, as PowerVR Rogue
+ GE8300, GE8320, and GE8322 report on vulkan.gpuinfo.org). Graphite reads the
+ device's limits and takes its texture limit from them.
  */
 enum class RNSkFeatureLevel { Core, Compatibility };
 
@@ -35,11 +35,12 @@ inline const char *featureLevelName(RNSkFeatureLevel level) {
 /**
  The color attachment limit to request for a device at `level`, or nullopt to
  keep the level's default. At the compatibility level the default is 4, while
- Dawn's own MSAA expand-resolve pipeline (BlitColorToColorWithDraw) declares
- one target per possible attachment, 8, so every pass that loads an MSAA
- attachment fails validation there; the adapter's own limit (8 on the drivers
- this level is for) is requested instead. At the core level the default is
- kept, so a core device is created exactly as before.
+ Dawn's own MSAA expand-resolve pipeline declares kDawnExpandResolveColorTargets
+ (8) targets, so every pass that loads an MSAA attachment fails validation
+ there; the adapter's own limit is requested instead. An adapter that allows
+ fewer than 8 also gives up TransientAttachments (see
+ requestsTransientAttachments). At the core level the default is kept, so a
+ core device is created exactly as before.
  */
 inline std::optional<uint32_t>
 requiredColorAttachments(RNSkFeatureLevel level,
