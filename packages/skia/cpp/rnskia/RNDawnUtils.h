@@ -14,6 +14,7 @@
 #include "RNDawnDeviceRequest.h"
 #include "RNDawnFeatureLevel.h"
 #include "RNSkCompatibilityConfig.h"
+#include "RNSkCompatibilityGuard.h"
 #include "RNSkPipelineStorage.h"
 #include "webgpu/webgpu_cpp.h"
 
@@ -443,16 +444,32 @@ requestDevice(dawn::native::Adapter &nativeAdapter,
 
 // `listener` is told of the primary device's loss (see DeviceLostListener)
 // and must outlive the device, as must `pipelineStorage` when given.
-// `compatibility` is the app's configuration of the compatibility level.
+// `compatibility` is the app's configuration of the compatibility level. On a
+// device without a core adapter, the attempt at that level is recorded before
+// its device is created and settled by its first presented frame (see
+// RNSkCompatibilityGuard), and the level is not tried after the attempts the
+// guard allows ended before it.
 inline skgpu::graphite::DawnBackendContext
 createDawnBackendContext(dawn::native::Instance *instance,
                          DeviceLostListener *listener,
                          const RNSkia::RNSkPipelineStorage *pipelineStorage,
                          const RNSkia::RNSkCompatibilityConfig &compatibility) {
 
-  auto matched = getMatchedAdapter(instance, [&compatibility]() {
-    return RNSkia::compatibilityRefusal(compatibility);
-  });
+  RNSkia::RNSkCompatibilityGuardFile guardFile(compatibility.guardDirectory);
+  std::optional<RNSkia::RNSkCompatibilityDecision> guard;
+  auto matched = getMatchedAdapter(
+      instance, [&compatibility, &guardFile,
+                 &guard]() -> std::optional<std::string> {
+        if (auto refusal = RNSkia::compatibilityRefusal(compatibility)) {
+          return refusal;
+        }
+        guard = RNSkia::decideCompatibilityAttempt(
+            guardFile.read(), compatibility.appVersion, guardFile.usable());
+        if (guard->plan != RNSkia::RNSkCompatibilityPlan::Attempt) {
+          return RNSkia::compatibilityStopReason(guard->plan);
+        }
+        return std::nullopt;
+      });
   auto &matchedAdapter = matched.adapter;
   wgpu::Adapter adapter = matchedAdapter.Get();
 
@@ -559,6 +576,18 @@ createDawnBackendContext(dawn::native::Instance *instance,
             matched.featureLevel, adapterLimits.maxColorAttachments)) {
       std::erase(features, wgpu::FeatureName::TransientAttachments);
     }
+  }
+
+  if (matched.featureLevel == RNSkia::RNSkFeatureLevel::Compatibility) {
+    if (!guard || !guardFile.write(guard->record)) {
+      throw std::runtime_error(
+          "React Native Skia found the " + adapterInfo.backend + " adapter " +
+          adapterInfo.device + " only at the WebGPU compatibility feature "
+          "level. " +
+          RNSkia::compatibilityStopReason(
+              RNSkia::RNSkCompatibilityPlan::StopUnrecorded));
+    }
+    RNSkia::RNSkCompatibilityAttempt::process().arm(guardFile);
   }
 
   wgpu::Device device = requestDevice(matchedAdapter, matched.featureLevel,

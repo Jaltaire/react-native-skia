@@ -26,7 +26,8 @@ public:
 
   static jni::local_ref<jhybriddata>
   initHybrid(jni::alias_ref<jhybridobject> jThis, const float,
-             std::string cacheDirectory, bool compatibilityFeatureLevelAllowed);
+             std::string cacheDirectory, bool compatibilityFeatureLevelAllowed,
+             std::string compatibilityGuardDirectory, std::string appVersion);
 
   static void registerNatives();
 
@@ -50,6 +51,12 @@ public:
     return _compatibilityFeatureLevelAllowed;
   }
 
+  const std::string &getCompatibilityGuardDirectory() const {
+    return _compatibilityGuardDirectory;
+  }
+
+  const std::string &getAppVersion() const { return _appVersion; }
+
 private:
   friend HybridBase;
   jni::global_ref<JniPlatformContext::javaobject> javaPart_;
@@ -57,6 +64,8 @@ private:
   float _pixelDensity;
   std::string _cacheDirectory;
   bool _compatibilityFeatureLevelAllowed;
+  std::string _compatibilityGuardDirectory;
+  std::string _appVersion;
   std::mutex _mainThreadTasksMutex;
   std::queue<std::function<void()>> _mainThreadTasks;
   bool _mainThreadDispatchScheduled = false;
@@ -64,9 +73,12 @@ private:
   explicit JniPlatformContext(
       jni::alias_ref<JniPlatformContext::jhybridobject> jThis,
       const float pixelDensity, std::string cacheDirectory,
-      bool compatibilityFeatureLevelAllowed)
+      bool compatibilityFeatureLevelAllowed,
+      std::string compatibilityGuardDirectory, std::string appVersion)
       : javaPart_(jni::make_global(jThis)), _pixelDensity(pixelDensity),
         _cacheDirectory(std::move(cacheDirectory)),
-        _compatibilityFeatureLevelAllowed(compatibilityFeatureLevelAllowed) {}
+        _compatibilityFeatureLevelAllowed(compatibilityFeatureLevelAllowed),
+        _compatibilityGuardDirectory(std::move(compatibilityGuardDirectory)),
+        _appVersion(std::move(appVersion)) {}
 };
 } // namespace RNSkia

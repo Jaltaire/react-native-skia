@@ -19,6 +19,18 @@ struct RNSkCompatibilityConfig {
    absent.
    */
   bool allowed = true;
+  /**
+   Where Skia records an attempt at the compatibility level until its first
+   frame is presented (see RNSkCompatibilityGuard): a directory of the app's
+   that is kept out of backups. Empty when the platform has none, and then
+   the level is not tried.
+   */
+  std::string guardDirectory;
+  /**
+   The app's version and build, which an attempt is recorded under: an
+   update tries a level that failed on the version before.
+   */
+  std::string appVersion;
 };
 
 /**

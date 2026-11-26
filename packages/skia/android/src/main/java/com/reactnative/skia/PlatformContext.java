@@ -1,7 +1,9 @@
 package com.reactnative.skia;
 
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -41,7 +43,25 @@ public class PlatformContext {
         mContext = reactContext;
         mHybridData = initHybrid(reactContext.getResources().getDisplayMetrics().density,
                 reactContext.getCacheDir().getAbsolutePath(),
-                compatibilityFeatureLevelAllowed(reactContext));
+                compatibilityFeatureLevelAllowed(reactContext),
+                reactContext.getNoBackupFilesDir().getAbsolutePath(),
+                appVersion(reactContext));
+    }
+
+    /**
+     * The app's version name and version code, which an attempt at the compatibility level is
+     * recorded under; empty when the package cannot be read.
+     */
+    static String appVersion(ReactContext context) {
+        try {
+            PackageInfo info = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+            long code = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                    ? info.getLongVersionCode()
+                    : info.versionCode;
+            return info.versionName + " (" + code + ")";
+        } catch (PackageManager.NameNotFoundException e) {
+            return "";
+        }
     }
 
     static boolean compatibilityFeatureLevelAllowed(ReactContext context) {
@@ -139,7 +159,8 @@ public class PlatformContext {
 
     // Private c++ native methods
     private native HybridData initHybrid(float pixelDensity, String cacheDirectory,
-            boolean compatibilityFeatureLevelAllowed);
+            boolean compatibilityFeatureLevelAllowed, String compatibilityGuardDirectory,
+            String appVersion);
 
     private native void notifyTaskReadyNative();
 }

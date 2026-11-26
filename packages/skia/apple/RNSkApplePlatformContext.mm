@@ -168,6 +168,30 @@ RNSkCompatibilityConfig RNSkApplePlatformContext::getCompatibilityConfig() {
   if ([allowed isKindOfClass:[NSNumber class]]) {
     config.allowed = [allowed boolValue];
   }
+  NSURL *support = [[NSFileManager defaultManager]
+       URLForDirectory:NSApplicationSupportDirectory
+              inDomain:NSUserDomainMask
+     appropriateForURL:nil
+                create:YES
+                 error:nil];
+  NSURL *directory = [support URLByAppendingPathComponent:@"RNSkia"
+                                              isDirectory:YES];
+  if (directory != nil &&
+      [[NSFileManager defaultManager] createDirectoryAtURL:directory
+                               withIntermediateDirectories:YES
+                                                attributes:nil
+                                                     error:nil] &&
+      [directory setResourceValue:@YES
+                           forKey:NSURLIsExcludedFromBackupKey
+                            error:nil]) {
+    config.guardDirectory = std::string([directory.path UTF8String]);
+  }
+  NSDictionary *info = [[NSBundle mainBundle] infoDictionary];
+  NSString *version = info[@"CFBundleShortVersionString"];
+  NSString *build = info[@"CFBundleVersion"];
+  config.appVersion =
+      std::string([[NSString stringWithFormat:@"%@ (%@)", version ?: @"",
+                                              build ?: @""] UTF8String]);
   return config;
 }
 

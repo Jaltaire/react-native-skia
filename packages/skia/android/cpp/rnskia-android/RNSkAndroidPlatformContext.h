@@ -48,6 +48,9 @@ public:
   RNSkCompatibilityConfig getCompatibilityConfig() override {
     RNSkCompatibilityConfig config;
     config.allowed = _jniPlatformContext->compatibilityFeatureLevelAllowed();
+    config.guardDirectory =
+        _jniPlatformContext->getCompatibilityGuardDirectory();
+    config.appVersion = _jniPlatformContext->getAppVersion();
     return config;
   }
 

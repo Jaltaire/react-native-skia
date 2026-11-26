@@ -43,4 +43,9 @@ for SANITIZER in address,undefined thread; do
     "$ROOT/packages/skia/cpp-tests/RNDawnDeviceRequestTest.cpp" \
     -o "$OUT/RNDawnDeviceRequestTest"
   "$OUT/RNDawnDeviceRequestTest"
+  /usr/bin/clang++ -std=c++20 -O1 -g -fsanitize="$SANITIZER" \
+    -I"$CPP/rnskia" \
+    "$ROOT/packages/skia/cpp-tests/RNSkCompatibilityGuardTest.cpp" \
+    -o "$OUT/RNSkCompatibilityGuardTest"
+  "$OUT/RNSkCompatibilityGuardTest"
 done
