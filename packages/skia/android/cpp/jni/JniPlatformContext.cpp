@@ -1,4 +1,5 @@
 #include "JniPlatformContext.h"
+#include "utils/RNSkLog.h"
 
 #include <exception>
 #include <thread>
@@ -25,14 +26,8 @@ void JniPlatformContext::registerNatives() {
 
 TSelf JniPlatformContext::initHybrid(jni::alias_ref<jhybridobject> jThis,
                                      float pixelDensity,
-                                     std::string cacheDirectory,
-                                     bool compatibilityFeatureLevelAllowed,
-                                     std::string compatibilityGuardDirectory,
-                                     std::string appVersion) {
-  return makeCxxInstance(jThis, pixelDensity, std::move(cacheDirectory),
-                         compatibilityFeatureLevelAllowed,
-                         std::move(compatibilityGuardDirectory),
-                         std::move(appVersion));
+                                     std::string cacheDirectory) {
+  return makeCxxInstance(jThis, pixelDensity, std::move(cacheDirectory));
 }
 
 void JniPlatformContext::performStreamOperation(
@@ -104,6 +99,32 @@ void JniPlatformContext::runTaskOnMainThread(std::function<void()> task) {
   if (shouldSchedule) {
     notifyTaskReadyExternal();
   }
+}
+
+RNSkCompatibilityConfig JniPlatformContext::compatibilityConfig() {
+  RNSkCompatibilityConfig config;
+  try {
+    jni::ThreadScope ts;
+    static auto allowed = javaPart_->getClass()->getMethod<jboolean()>(
+        "compatibilityFeatureLevelAllowed");
+    static auto directory = javaPart_->getClass()->getMethod<jstring()>(
+        "compatibilityGuardDirectory");
+    static auto version =
+        javaPart_->getClass()->getMethod<jstring()>("appVersion");
+    config.allowed = allowed(javaPart_.get()) == JNI_TRUE;
+    if (auto value = directory(javaPart_.get())) {
+      config.guardDirectory = value->toStdString();
+    }
+    if (auto value = version(javaPart_.get())) {
+      config.appVersion = value->toStdString();
+    }
+  } catch (const std::exception &e) {
+    RNSkLogger::logToConsole("React Native Skia could not read the app's "
+                             "compatibility level settings: %s",
+                             e.what());
+    config.guardDirectory.clear();
+  }
+  return config;
 }
 
 void JniPlatformContext::notifyTaskReadyExternal() {

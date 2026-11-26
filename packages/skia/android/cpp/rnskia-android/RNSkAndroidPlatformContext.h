@@ -46,12 +46,7 @@ public:
   }
 
   RNSkCompatibilityConfig getCompatibilityConfig() override {
-    RNSkCompatibilityConfig config;
-    config.allowed = _jniPlatformContext->compatibilityFeatureLevelAllowed();
-    config.guardDirectory =
-        _jniPlatformContext->getCompatibilityGuardDirectory();
-    config.appVersion = _jniPlatformContext->getAppVersion();
-    return config;
+    return _jniPlatformContext->compatibilityConfig();
   }
 
   sk_sp<SkSurface> makeOffscreenSurface(int width, int height,

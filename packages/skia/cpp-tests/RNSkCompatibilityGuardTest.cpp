@@ -1,3 +1,4 @@
+#include "RNDawnFeatureLevel.h"
 #include "RNSkCompatibilityGuard.h"
 
 #include <cstdio>
@@ -8,6 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+using RNSkia::chooseAdapter;
 using RNSkia::compatibilityStopReason;
 using RNSkia::consultCompatibilityGuard;
 using RNSkia::decideCompatibilityAttempt;
@@ -19,6 +21,7 @@ using RNSkia::RNSkCompatibilityConfig;
 using RNSkia::RNSkCompatibilityGuardFile;
 using RNSkia::RNSkCompatibilityGuardState;
 using RNSkia::RNSkCompatibilityPlan;
+using RNSkia::RNSkFeatureLevel;
 
 namespace {
 
@@ -335,7 +338,7 @@ void aReplacementDeviceTouchesNoRecord() {
   const auto config = configFor(directory);
   RNSkCompatibilityAttempt attempt;
   RNSkCompatibilityGuardState first;
-  expect(!consultCompatibilityGuard(attempt, config, first).has_value() &&
+  expect(!consultCompatibilityGuard(attempt, [&config]() { return config; }, first).has_value() &&
              first.decision.has_value(),
          "the process's first device consults the guard");
   attempt.beginCreation(*first.file, first.decision->record);
@@ -345,7 +348,7 @@ void aReplacementDeviceTouchesNoRecord() {
   attempt.notePresented();
   for (int loss = 0; loss < 3; loss++) {
     RNSkCompatibilityGuardState replacement;
-    expect(!consultCompatibilityGuard(attempt, config, replacement)
+    expect(!consultCompatibilityGuard(attempt, [&config]() { return config; }, replacement)
                 .has_value() &&
                !replacement.decision.has_value() &&
                !replacement.file.has_value(),
@@ -363,17 +366,62 @@ void aLossDuringTheFirstWorkCountsOnce() {
   const auto config = configFor(directory);
   RNSkCompatibilityAttempt attempt;
   RNSkCompatibilityGuardState first;
-  consultCompatibilityGuard(attempt, config, first);
+  consultCompatibilityGuard(attempt, [&config]() { return config; }, first);
   attempt.beginCreation(*first.file, first.decision->record);
   attempt.endCreation(true);
   attempt.beginFirstWork(true);
   for (int loss = 0; loss < 3; loss++) {
     RNSkCompatibilityGuardState replacement;
-    consultCompatibilityGuard(attempt, config, replacement);
+    consultCompatibilityGuard(attempt, [&config]() { return config; }, replacement);
   }
   expect(recorded(file) == 1,
          "a session that loses its device during its first work, and keeps "
          "replacing it, counts once");
+}
+
+/**
+ The probe's choice of adapter with the shipped gate, as DawnUtils makes it,
+ counting how often the app's configuration is resolved.
+ */
+std::optional<std::pair<std::string, RNSkFeatureLevel>>
+probe(bool hasCoreAdapter, const RNSkCompatibilityConfig &config,
+      int &resolved) {
+  RNSkCompatibilityAttempt attempt;
+  RNSkCompatibilityGuardState state;
+  return chooseAdapter<std::string>(
+      [hasCoreAdapter](RNSkFeatureLevel level) -> std::optional<std::string> {
+        if (level == RNSkFeatureLevel::Core && !hasCoreAdapter) {
+          return std::nullopt;
+        }
+        return std::string("GPU");
+      },
+      [&]() {
+        return !consultCompatibilityGuard(
+                    attempt,
+                    [&]() {
+                      resolved++;
+                      return config;
+                    },
+                    state)
+                    .has_value();
+      });
+}
+
+void aCorePhoneNeverResolvesTheConfiguration() {
+  Directory directory;
+  int resolved = 0;
+  auto chosen = probe(true, configFor(directory), resolved);
+  expect(chosen && chosen->second == RNSkFeatureLevel::Core,
+         "a phone with a core adapter renders at the core level");
+  expect(resolved == 0,
+         "and never resolves the app's configuration: no settings, "
+         "directory, or version is read");
+  expect(!RNSkCompatibilityGuardFile(directory.path).read().has_value(),
+         "nor any record touched");
+  chosen = probe(false, configFor(directory), resolved);
+  expect(resolved == 1 && chosen &&
+             chosen->second == RNSkFeatureLevel::Compatibility,
+         "a phone without one resolves it once, at the gate");
 }
 
 void anUnusedAttemptWatchesNothing() {
@@ -406,6 +454,7 @@ int main() {
   aSuccessResetsTheCount();
   aReplacementDeviceTouchesNoRecord();
   aLossDuringTheFirstWorkCountsOnce();
+  aCorePhoneNeverResolvesTheConfiguration();
   anUnusedAttemptWatchesNothing();
   if (failures > 0) {
     std::fprintf(stderr, "%d expectation(s) failed\n", failures);

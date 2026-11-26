@@ -42,10 +42,25 @@ public class PlatformContext {
     public PlatformContext(ReactContext reactContext) {
         mContext = reactContext;
         mHybridData = initHybrid(reactContext.getResources().getDisplayMetrics().density,
-                reactContext.getCacheDir().getAbsolutePath(),
-                compatibilityFeatureLevelAllowed(reactContext),
-                reactContext.getNoBackupFilesDir().getAbsolutePath(),
-                appVersion(reactContext));
+                reactContext.getCacheDir().getAbsolutePath());
+    }
+
+    // The app's configuration of the WebGPU compatibility level, read by the GPU probe only on a
+    // device without a core adapter (see RNSkPlatformContext::getCompatibilityConfig).
+
+    @DoNotStrip
+    public boolean compatibilityFeatureLevelAllowed() {
+        return compatibilityFeatureLevelAllowed(mContext);
+    }
+
+    @DoNotStrip
+    public String compatibilityGuardDirectory() {
+        return mContext.getNoBackupFilesDir().getAbsolutePath();
+    }
+
+    @DoNotStrip
+    public String appVersion() {
+        return appVersion(mContext);
     }
 
     /**
@@ -158,9 +173,7 @@ public class PlatformContext {
     }
 
     // Private c++ native methods
-    private native HybridData initHybrid(float pixelDensity, String cacheDirectory,
-            boolean compatibilityFeatureLevelAllowed, String compatibilityGuardDirectory,
-            String appVersion);
+    private native HybridData initHybrid(float pixelDensity, String cacheDirectory);
 
     private native void notifyTaskReadyNative();
 }

@@ -139,20 +139,21 @@ public:
   }
 
   /**
-   How the app configures the compatibility level (see
-   RNSkCompatibilityConfig). Set by the platform before the probe starts; a
-   value set after the context was created is ignored.
+   Where the app's configuration of the compatibility level comes from (see
+   RNSkCompatibilityConfig): a function the probe calls only on a device
+   without a core adapter, so that a device with one never reads the app's
+   settings, its directories, or its version. Set by the platform before the
+   probe starts; one set after the context was created is not used. Without
+   one, the configuration has no directory for the guard's record, and the
+   level is not tried.
    */
-  static void setCompatibilityConfig(const RNSkCompatibilityConfig &config) {
+  static void setCompatibilityConfigResolver(
+      std::function<RNSkCompatibilityConfig()> resolver) {
     auto &state = compatibilityState();
     std::lock_guard<std::mutex> lock(state.mutex);
-    if (state.claimed) {
-      RNSkLogger::logToConsole(
-          "The compatibility level's configuration was set after the Dawn "
-          "context was created. Keeping the earlier one.");
-      return;
+    if (!state.claimed) {
+      state.resolver = std::move(resolver);
     }
-    state.config = config;
   }
 
   static void setPipelineCacheDirectory(const std::string &directory) {
@@ -671,7 +672,7 @@ private:
 
   struct CompatibilityState {
     std::mutex mutex;
-    RNSkCompatibilityConfig config;
+    std::function<RNSkCompatibilityConfig()> resolver;
     bool claimed = false;
   };
 
@@ -680,11 +681,15 @@ private:
     return *state;
   }
 
-  static RNSkCompatibilityConfig claimCompatibilityConfig() {
+  static std::function<RNSkCompatibilityConfig()>
+  claimCompatibilityConfigResolver() {
     auto &state = compatibilityState();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.claimed = true;
-    return state.config;
+    if (!state.resolver) {
+      return []() { return RNSkCompatibilityConfig{}; };
+    }
+    return state.resolver;
   }
 
   static std::string claimPipelineCacheDirectory() {
@@ -868,7 +873,7 @@ private:
         claimPipelineCacheDirectory(), "m" + std::to_string(SK_MILESTONE));
     backendContext = DawnUtils::createDawnBackendContext(
         instance.get(), &_deviceLostListener, _pipelineStorage.get(),
-        claimCompatibilityConfig());
+        claimCompatibilityConfigResolver());
 
     skgpu::graphite::ContextOptions ctxOptions;
     skgpu::graphite::ContextOptionsPriv contextOptionsPriv;

@@ -86,7 +86,8 @@ If two launches in a row on the same app version end inside those windows, Skia 
 The next app version tries the level again.
 A launch that never draws (a background start, or one left from a screen without a canvas) neither counts nor resets the count.
 If the count cannot be written, Skia does not try the level.
-Devices with a core adapter never read or write the count.
+Devices with a core adapter never read or write the count, and never read the app's build setting, directories, or version: Skia reads them only after it found no core adapter.
+If react-native-webgpu asks for the GPU before Skia's module is installed, Skia has none of them yet, and does not try the level in that process.
 
 On a device without Vulkan the app still runs: `Skia.gpu.isAvailable` is false, `Skia.gpu.error` says why, and canvases stay blank.
 An app that has to render on such devices uses [v2](https://wcandillon.github.io/react-native-skia/v2/docs/getting-started/installation/), which renders with OpenGL ES.

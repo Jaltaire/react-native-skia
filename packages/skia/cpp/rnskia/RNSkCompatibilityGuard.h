@@ -354,14 +354,19 @@ struct RNSkCompatibilityGuardState {
 /**
  The gate on the compatibility level, asked only on a device without a core
  adapter (see chooseAdapter): why the level is not tried, or nullopt when it
- may be. Only the process's first device consults the guard; a later one (a
- device that replaces a lost one) is allowed the level and touches no
- record, so that one session cannot use up the attempts the guard allows.
+ may be. `resolveConfig` gives the app's configuration and is called here
+ only, so that a device with a core adapter never reads the app's settings,
+ directories, or version. Only the process's first device consults the
+ guard; a later one (a device that replaces a lost one) is allowed the level
+ and touches no record, so that one session cannot use up the attempts the
+ guard allows.
  */
-inline std::optional<std::string>
+template <typename ResolveConfig>
+std::optional<std::string>
 consultCompatibilityGuard(const RNSkCompatibilityAttempt &attempt,
-                          const RNSkCompatibilityConfig &config,
+                          ResolveConfig &&resolveConfig,
                           RNSkCompatibilityGuardState &state) {
+  const RNSkCompatibilityConfig config = resolveConfig();
   if (auto refusal = compatibilityRefusal(config)) {
     return refusal;
   }

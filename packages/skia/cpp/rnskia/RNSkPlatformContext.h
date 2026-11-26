@@ -138,9 +138,11 @@ public:
   virtual std::string getCacheDirectory() = 0;
 
   /**
-   * How the app configures rendering at the WebGPU compatibility level, read
-   * from the app's build settings before the GPU is probed (see
-   * RNSkCompatibilityConfig). The default allows it.
+   * How the app configures rendering at the WebGPU compatibility level (see
+   * RNSkCompatibilityConfig): its build setting, the directory for the
+   * guard's record, and its version. Called by the GPU probe only on a device
+   * without a core adapter, on the probe's thread. The default allows the
+   * level and has no directory, so the level is not tried.
    */
   virtual RNSkCompatibilityConfig getCompatibilityConfig() { return {}; }
 

@@ -26,8 +26,7 @@ public:
 
   static jni::local_ref<jhybriddata>
   initHybrid(jni::alias_ref<jhybridobject> jThis, const float,
-             std::string cacheDirectory, bool compatibilityFeatureLevelAllowed,
-             std::string compatibilityGuardDirectory, std::string appVersion);
+             std::string cacheDirectory);
 
   static void registerNatives();
 
@@ -47,15 +46,13 @@ public:
 
   const std::string &getCacheDirectory() const { return _cacheDirectory; }
 
-  bool compatibilityFeatureLevelAllowed() const {
-    return _compatibilityFeatureLevelAllowed;
-  }
-
-  const std::string &getCompatibilityGuardDirectory() const {
-    return _compatibilityGuardDirectory;
-  }
-
-  const std::string &getAppVersion() const { return _appVersion; }
+  /**
+   The app's configuration of the compatibility level, read from the Java
+   side on demand (on the GPU probe's thread, only on a device without a core
+   adapter). When the Java side cannot answer, the directory is empty and the
+   level is not tried.
+   */
+  RNSkCompatibilityConfig compatibilityConfig();
 
 private:
   friend HybridBase;
@@ -63,22 +60,14 @@ private:
 
   float _pixelDensity;
   std::string _cacheDirectory;
-  bool _compatibilityFeatureLevelAllowed;
-  std::string _compatibilityGuardDirectory;
-  std::string _appVersion;
   std::mutex _mainThreadTasksMutex;
   std::queue<std::function<void()>> _mainThreadTasks;
   bool _mainThreadDispatchScheduled = false;
 
   explicit JniPlatformContext(
       jni::alias_ref<JniPlatformContext::jhybridobject> jThis,
-      const float pixelDensity, std::string cacheDirectory,
-      bool compatibilityFeatureLevelAllowed,
-      std::string compatibilityGuardDirectory, std::string appVersion)
+      const float pixelDensity, std::string cacheDirectory)
       : javaPart_(jni::make_global(jThis)), _pixelDensity(pixelDensity),
-        _cacheDirectory(std::move(cacheDirectory)),
-        _compatibilityFeatureLevelAllowed(compatibilityFeatureLevelAllowed),
-        _compatibilityGuardDirectory(std::move(compatibilityGuardDirectory)),
-        _appVersion(std::move(appVersion)) {}
+        _cacheDirectory(std::move(cacheDirectory)) {}
 };
 } // namespace RNSkia

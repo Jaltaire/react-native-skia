@@ -444,7 +444,8 @@ requestDevice(dawn::native::Adapter &nativeAdapter,
 
 // `listener` is told of the primary device's loss (see DeviceLostListener)
 // and must outlive the device, as must `pipelineStorage` when given.
-// `compatibility` is the app's configuration of the compatibility level. On a
+// `resolveCompatibility` gives the app's configuration of the compatibility
+// level, and is called only on a device without a core adapter. On a
 // device without a core adapter, the attempt at that level is counted while
 // its device is created and while its first work runs (see
 // RNSkCompatibilityAttempt), and the level is not tried after the attempts
@@ -453,12 +454,14 @@ inline skgpu::graphite::DawnBackendContext
 createDawnBackendContext(dawn::native::Instance *instance,
                          DeviceLostListener *listener,
                          const RNSkia::RNSkPipelineStorage *pipelineStorage,
-                         const RNSkia::RNSkCompatibilityConfig &compatibility) {
+                         const std::function<RNSkia::RNSkCompatibilityConfig()>
+                             &resolveCompatibility) {
 
   auto &attempt = RNSkia::RNSkCompatibilityAttempt::process();
   RNSkia::RNSkCompatibilityGuardState guard;
   auto matched = getMatchedAdapter(instance, [&]() {
-    return RNSkia::consultCompatibilityGuard(attempt, compatibility, guard);
+    return RNSkia::consultCompatibilityGuard(attempt, resolveCompatibility,
+                                             guard);
   });
   auto &matchedAdapter = matched.adapter;
   wgpu::Adapter adapter = matchedAdapter.Get();
