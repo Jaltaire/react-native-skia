@@ -538,6 +538,14 @@ createDawnBackendContext(dawn::native::Instance *instance,
     std::erase(features, wgpu::FeatureName::TransientAttachments);
   }
 #endif
+  if (matched.featureLevel == RNSkia::RNSkFeatureLevel::Compatibility) {
+    wgpu::Limits adapterLimits{};
+    adapter.GetLimits(&adapterLimits);
+    if (!RNSkia::requestsTransientAttachments(
+            matched.featureLevel, adapterLimits.maxColorAttachments)) {
+      std::erase(features, wgpu::FeatureName::TransientAttachments);
+    }
+  }
 
   wgpu::Device device = requestDevice(matchedAdapter, matched.featureLevel,
                                       features, listener, pipelineStorage);

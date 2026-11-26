@@ -8,6 +8,7 @@
 
 using RNSkia::chooseAdapter;
 using RNSkia::featureLevelName;
+using RNSkia::requestsTransientAttachments;
 using RNSkia::requiredColorAttachments;
 using RNSkia::RNSkFeatureLevel;
 
@@ -97,7 +98,28 @@ void compatibilityRequestsTheAdapterColorAttachmentLimit() {
          "which Dawn's MSAA expand-resolve pipeline declares");
   auto lower = requiredColorAttachments(RNSkFeatureLevel::Compatibility, 4);
   expect(lower.has_value() && *lower == 4,
-         "a compatibility device never requests more than its adapter has");
+         "a compatibility device requests no more color attachments than its "
+         "adapter reports");
+}
+
+void coreKeepsTransientAttachments() {
+  expect(requestsTransientAttachments(RNSkFeatureLevel::Core, 8),
+         "a core device requests TransientAttachments");
+  expect(requestsTransientAttachments(RNSkFeatureLevel::Core, 4),
+         "a core device requests TransientAttachments whatever the adapter "
+         "reports");
+}
+
+void compatibilityKeepsTransientAttachmentsOnlyWithEightTargets() {
+  expect(requestsTransientAttachments(RNSkFeatureLevel::Compatibility, 8),
+         "a compatibility device whose adapter allows the expand-resolve "
+         "pipeline's 8 targets requests TransientAttachments");
+  expect(!requestsTransientAttachments(RNSkFeatureLevel::Compatibility, 7),
+         "a compatibility device whose adapter allows 7 color attachments "
+         "does not, so Graphite emulates the load and store resolve");
+  expect(!requestsTransientAttachments(RNSkFeatureLevel::Compatibility, 4),
+         "a compatibility device whose adapter allows 4 color attachments "
+         "does not, so Graphite emulates the load and store resolve");
 }
 
 } // namespace
@@ -109,6 +131,8 @@ int main() {
   levelsAreNamedAsSkiaGpuReportsThem();
   coreKeepsTheDefaultColorAttachmentLimit();
   compatibilityRequestsTheAdapterColorAttachmentLimit();
+  coreKeepsTransientAttachments();
+  compatibilityKeepsTransientAttachmentsOnlyWithEightTargets();
   if (failures > 0) {
     std::fprintf(stderr, "%d expectation(s) failed\n", failures);
     return EXIT_FAILURE;

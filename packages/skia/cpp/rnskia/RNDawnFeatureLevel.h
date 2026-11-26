@@ -54,6 +54,33 @@ requiredColorAttachments(RNSkFeatureLevel level,
 }
 
 /**
+ The color targets Dawn's own MSAA expand-resolve pipeline declares: one per
+ possible attachment (on Vulkan, GetOrCreateColorBlitPipeline in
+ ResolveTextureLoadingUtilsVk.cpp), whatever the pass attaches.
+ */
+inline constexpr uint32_t kDawnExpandResolveColorTargets = 8;
+
+/**
+ Whether a device at `level` requests TransientAttachments. With it, Graphite
+ loads MSAA attachments through Dawn's expand-resolve pipeline, which a device
+ allowing fewer than kDawnExpandResolveColorTargets color attachments refuses
+ whenever Dawn validates (debug builds, and after a device loss or an
+ out-of-memory error). Without it, Graphite emulates the load and store
+ resolve and never asks Dawn for that pipeline. A core device allows eight
+ and keeps the feature.
+ */
+inline bool requestsTransientAttachments(RNSkFeatureLevel level,
+                                         uint32_t adapterMaxColorAttachments) {
+  switch (level) {
+  case RNSkFeatureLevel::Core:
+    return true;
+  case RNSkFeatureLevel::Compatibility:
+    return adapterMaxColorAttachments >= kDawnExpandResolveColorTargets;
+  }
+  return true;
+}
+
+/**
  The adapter `find` returns at the first level, in kRNSkFeatureLevels order,
  where it returns one, with that level; nullopt when it returns none at any
  level. `find` is not asked at a lower level once a higher one has an adapter.
