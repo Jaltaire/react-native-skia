@@ -1,0 +1,100 @@
+#include "RNDawnFeatureLevel.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <optional>
+#include <string>
+#include <vector>
+
+using RNSkia::chooseAdapter;
+using RNSkia::featureLevelName;
+using RNSkia::RNSkFeatureLevel;
+
+namespace {
+
+int failures = 0;
+
+void expect(bool condition, const char *description) {
+  if (!condition) {
+    std::fprintf(stderr, "FAILED: %s\n", description);
+    failures++;
+  }
+}
+
+/**
+ A device as Dawn's adapter enumeration sees it: the adapter it has at each
+ feature level, if any, and the levels it was asked at, in order.
+ */
+struct Device {
+  std::optional<std::string> core;
+  std::optional<std::string> compatibility;
+  std::vector<RNSkFeatureLevel> asked;
+
+  std::optional<std::pair<std::string, RNSkFeatureLevel>> choose() {
+    return chooseAdapter<std::string>([this](RNSkFeatureLevel level) {
+      asked.push_back(level);
+      return level == RNSkFeatureLevel::Core ? core : compatibility;
+    });
+  }
+};
+
+void coreAdapterIsChosenWithoutAskingForCompatibility() {
+  Device device{"Adreno 740", "Adreno 740", {}};
+  auto chosen = device.choose();
+  expect(chosen.has_value(), "a device with a core adapter has an adapter");
+  expect(chosen && chosen->first == "Adreno 740",
+         "the core adapter is the one chosen");
+  expect(chosen && chosen->second == RNSkFeatureLevel::Core,
+         "a device with a core adapter renders at the core level");
+  expect(device.asked == std::vector<RNSkFeatureLevel>{RNSkFeatureLevel::Core},
+         "compatibility is never asked for when core has an adapter");
+}
+
+void compatibilityAdapterIsChosenWhenCoreHasNone() {
+  Device device{std::nullopt, "PowerVR Rogue GE8320", {}};
+  auto chosen = device.choose();
+  expect(chosen.has_value(),
+         "a device with only a compatibility adapter has an adapter");
+  expect(chosen && chosen->first == "PowerVR Rogue GE8320",
+         "the compatibility adapter is the one chosen");
+  expect(chosen && chosen->second == RNSkFeatureLevel::Compatibility,
+         "a device without a core adapter renders at the compatibility level");
+  expect(device.asked ==
+             std::vector<RNSkFeatureLevel>{RNSkFeatureLevel::Core,
+                                           RNSkFeatureLevel::Compatibility},
+         "core is asked first, then compatibility");
+}
+
+void noAdapterAtEitherLevelChoosesNone() {
+  Device device{std::nullopt, std::nullopt, {}};
+  auto chosen = device.choose();
+  expect(!chosen.has_value(),
+         "a device with no adapter at either level has none");
+  expect(device.asked ==
+             std::vector<RNSkFeatureLevel>{RNSkFeatureLevel::Core,
+                                           RNSkFeatureLevel::Compatibility},
+         "both levels are asked before giving up");
+}
+
+void levelsAreNamedAsSkiaGpuReportsThem() {
+  expect(std::string(featureLevelName(RNSkFeatureLevel::Core)) == "core",
+         "the core level is named \"core\"");
+  expect(std::string(featureLevelName(RNSkFeatureLevel::Compatibility)) ==
+             "compatibility",
+         "the compatibility level is named \"compatibility\"");
+}
+
+} // namespace
+
+int main() {
+  coreAdapterIsChosenWithoutAskingForCompatibility();
+  compatibilityAdapterIsChosenWhenCoreHasNone();
+  noAdapterAtEitherLevelChoosesNone();
+  levelsAreNamedAsSkiaGpuReportsThem();
+  if (failures > 0) {
+    std::fprintf(stderr, "%d expectation(s) failed\n", failures);
+    return EXIT_FAILURE;
+  }
+  std::printf("RNDawnFeatureLevelTest: all expectations met\n");
+  return EXIT_SUCCESS;
+}

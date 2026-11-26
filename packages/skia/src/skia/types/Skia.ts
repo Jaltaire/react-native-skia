@@ -60,6 +60,14 @@ export interface SkGpuInfo {
   readonly architecture: string;
   readonly device: string;
   readonly description: string;
+  /**
+   * The WebGPU feature level Skia renders at (native only): "core", or
+   * "compatibility" on a device whose driver falls short of a WebGPU core
+   * requirement but meets the compatibility ones (Skia asks for core first
+   * and for compatibility only when the device has no core adapter); empty
+   * when unavailable.
+   */
+  readonly featureLevel: "core" | "compatibility" | "";
   /** Why the GPU is unavailable; null when it is. */
   readonly error: string | null;
 }

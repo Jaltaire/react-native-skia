@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include "RNDawnFeatureLevel.h"
 #include "RNSkPipelineStorage.h"
 #include "webgpu/webgpu_cpp.h"
 
@@ -175,16 +176,16 @@ constexpr auto kPlatformBackendType = wgpu::BackendType::Vulkan;
 // Why no adapter was found, for the error raised to JS: every adapter Dawn
 // can see on any backend and at the compatibility feature level, so that the
 // message tells a device without Vulkan apart from one whose driver falls
-// short of the WebGPU core requirements. On Android it names v2, which renders
-// with OpenGL ES on such devices.
+// short of even the WebGPU compatibility requirements. On Android it names
+// v2, which renders with OpenGL ES on such devices.
 inline std::string describeMissingAdapter(dawn::native::Instance *instance) {
   std::string message = "React Native Skia renders with ";
   message += backendTypeName(kPlatformBackendType);
 #ifdef __ANDROID__
   message += " (Vulkan 1.1 or later)";
 #endif
-  message += " and found no GPU adapter meeting the WebGPU core requirements "
-             "on this device.";
+  message += " and found no GPU adapter meeting the WebGPU core or "
+             "compatibility requirements on this device.";
   wgpu::RequestAdapterOptions options;
   options.featureLevel = wgpu::FeatureLevel::Compatibility;
   auto adapters = instance->EnumerateAdapters(&options);
@@ -208,24 +209,30 @@ inline std::string describeMissingAdapter(dawn::native::Instance *instance) {
   return message;
 }
 
-// Find the best matching GPU adapter for the current platform.
-// Sorts by adapter type (DiscreteGPU > IntegratedGPU > CPU) and selects the
-// first adapter matching the platform backend (Metal on Apple, Vulkan on
-// Android). Throws std::runtime_error, with a message describing the
-// device, when there is none.
-inline dawn::native::Adapter
-getMatchedAdapter(dawn::native::Instance *instance) {
+inline wgpu::FeatureLevel toWGPUFeatureLevel(RNSkia::RNSkFeatureLevel level) {
+  switch (level) {
+  case RNSkia::RNSkFeatureLevel::Core:
+    return wgpu::FeatureLevel::Core;
+  case RNSkia::RNSkFeatureLevel::Compatibility:
+    return wgpu::FeatureLevel::Compatibility;
+  }
+  return wgpu::FeatureLevel::Core;
+}
+
+// The best adapter on the platform backend (Metal on Apple, Vulkan on
+// Android) at the given feature level, sorted by adapter type (DiscreteGPU >
+// IntegratedGPU > CPU), or nullopt when Dawn has none there.
+inline std::optional<dawn::native::Adapter>
+findPlatformAdapter(dawn::native::Instance *instance,
+                    RNSkia::RNSkFeatureLevel level) {
   constexpr auto kDefaultBackendType = kPlatformBackendType;
 
   wgpu::RequestAdapterOptions options;
   options.backendType = kDefaultBackendType;
-  options.featureLevel = wgpu::FeatureLevel::Core;
+  options.featureLevel = toWGPUFeatureLevel(level);
 
   std::vector<dawn::native::Adapter> adapters =
       instance->EnumerateAdapters(&options);
-  if (adapters.empty()) {
-    throw std::runtime_error(describeMissingAdapter(instance));
-  }
 
   std::sort(adapters.begin(), adapters.end(),
             [](dawn::native::Adapter a, dawn::native::Adapter b) {
@@ -247,8 +254,25 @@ getMatchedAdapter(dawn::native::Instance *instance) {
       return adapter;
     }
   }
+  return std::nullopt;
+}
 
-  throw std::runtime_error(describeMissingAdapter(instance));
+// The adapter Skia renders on: the best one at the WebGPU core feature level
+// and, only on a device that has none, the best one at the compatibility
+// level (see RNSkFeatureLevel). A device created from a compatibility
+// adapter runs in compatibility mode, whose limits Graphite reads. Throws
+// std::runtime_error, with a message describing the device, when there is
+// none at either level.
+inline dawn::native::Adapter
+getMatchedAdapter(dawn::native::Instance *instance) {
+  auto chosen = RNSkia::chooseAdapter<dawn::native::Adapter>(
+      [instance](RNSkia::RNSkFeatureLevel level) {
+        return findPlatformAdapter(instance, level);
+      });
+  if (!chosen) {
+    throw std::runtime_error(describeMissingAdapter(instance));
+  }
+  return chosen->first;
 }
 
 // Where requestDevice() reports what becomes of the device. A loss after

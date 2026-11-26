@@ -146,6 +146,7 @@ export const JsiSkApi = (CanvasKit: CanvasKit): Skia => ({
     architecture: "",
     device: "",
     description: "",
+    featureLevel: "",
     error: null,
   },
 });

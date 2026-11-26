@@ -63,6 +63,12 @@ public:
     bool available = false;
     /** The adapter Skia renders on; empty when unavailable. */
     DawnUtils::AdapterDescription adapter;
+    /**
+     The WebGPU feature level the device runs at: "core", or
+     "compatibility" on a device without a core adapter (see
+     RNSkFeatureLevel); empty when unavailable.
+     */
+    std::string featureLevel;
     /** Why the GPU is unavailable; empty when it is. */
     std::string error;
   };
@@ -568,8 +574,20 @@ private:
       try {
         probe->instance = new DawnContext();
         probe->info.available = true;
-        probe->info.adapter = DawnUtils::describeAdapter(
-            probe->instance->backendContext.fDevice.GetAdapter());
+        const auto &device = probe->instance->backendContext.fDevice;
+        probe->info.adapter = DawnUtils::describeAdapter(device.GetAdapter());
+        const auto level =
+            device.HasFeature(wgpu::FeatureName::CoreFeaturesAndLimits)
+                ? RNSkFeatureLevel::Core
+                : RNSkFeatureLevel::Compatibility;
+        probe->info.featureLevel = featureLevelName(level);
+        if (level == RNSkFeatureLevel::Compatibility) {
+          RNSkLogger::logToConsole(
+              "React Native Skia found no GPU adapter meeting the WebGPU core "
+              "requirements on this device and renders on %s at the WebGPU "
+              "compatibility feature level.",
+              probe->info.adapter.device.c_str());
+        }
       } catch (const std::exception &e) {
         probe->info.error = e.what();
         RNSkLogger::logToConsole(probe->info.error);

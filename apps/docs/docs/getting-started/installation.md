@@ -63,6 +63,9 @@ Skia renders with Vulkan 1.1, which every 64-bit device shipped with Android 10 
 The library's manifest declares it as a required feature, so the Play Store does not serve your app to devices without it.
 This does not affect the emulator (use an API 29 or later image with hardware graphics acceleration).
 
+Skia asks Dawn for a Vulkan adapter at the WebGPU core feature level first.
+On a device whose driver falls short of a core requirement but meets the compatibility ones (for example, a 2D texture limit of 4096, as on PowerVR GE8300, GE8320, and GE8322 GPUs), it renders at the compatibility level instead, and `Skia.gpu.featureLevel` is `"compatibility"`.
+
 On a device without Vulkan the app still runs: `Skia.gpu.isAvailable` is false, `Skia.gpu.error` says why, and canvases stay blank.
 An app that has to render on such devices uses [v2](https://wcandillon.github.io/react-native-skia/v2/docs/getting-started/installation/), which renders with OpenGL ES.
 To ship to those devices anyway, remove the declaration from your app's manifest and check the flag before rendering with Skia:

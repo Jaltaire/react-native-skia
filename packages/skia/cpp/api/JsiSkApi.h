@@ -185,6 +185,7 @@ public:
                        string(gpu.adapter.architecture));
     result.setProperty(runtime, "device", string(gpu.adapter.device));
     result.setProperty(runtime, "description", string(gpu.adapter.description));
+    result.setProperty(runtime, "featureLevel", string(gpu.featureLevel));
     result.setProperty(runtime, "error",
                        gpu.available ? jsi::Value::null()
                                      : jsi::Value(runtime, string(gpu.error)));
