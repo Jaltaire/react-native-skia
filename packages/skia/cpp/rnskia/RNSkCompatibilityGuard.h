@@ -433,6 +433,17 @@ enum class RNSkCompatibilityWork {
  AwaitingFirstWork until then, so a thread that finds the window being opened
  waits for the opening write instead of drawing ahead of its count.
 
+ Not counted, by design: the buffers and textures Graphite creates while a
+ drawing is recorded, before its snap opens the window; an upload or a
+ readback before the first drawing; and a second device made alongside the
+ first.
+
+ The settle's removal runs on the thread that delivers the last of the
+ window frame's present and the GPU's report: the main thread when the
+ report came first, once per process. It stays there: by then no thread that
+ writes the record is still running, and its order is safe on any thread,
+ as the attempt is Finished before the removal and nothing writes after it.
+
  Every transition is taken under the attempt's mutex. A process that never
  begins (every device with a core adapter) reads one atomic value per
  submission, per draw snapped, per window surface made, and per precompile;
